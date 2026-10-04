@@ -24,7 +24,8 @@ class VectorFace:
 
 def select_adaptive_faces(
     person: PersonRecord,
-    candidates: list[VectorFace],
+    foundation_candidates: list[VectorFace],
+    expansion_candidates: list[VectorFace],
     *,
     foundation_count: int = FOUNDATION_COUNT,
     max_count: int = MAX_TRAINING_COUNT,
@@ -32,11 +33,11 @@ def select_adaptive_faces(
 ) -> list[VectorFace]:
     """Select a strong foundation, then add only meaningfully novel samples.
 
-    Foundation selection is based on centrality in Immich's face-vector space,
-    which acts as a conservative proxy for typical, front-facing identity views.
-    Expansion then uses combined face+scene vectors and only accepts candidates
-    that are sufficiently far from the already selected set. This prevents
-    filling a quota with many near-duplicate images from the same situation.
+    Foundation candidates are expected to have passed the stricter image-quality
+    gate. The first five are chosen by centrality in Immich's face-vector space,
+    a conservative proxy for typical identity views. Expansion can use a wider
+    quality-approved pool, but a candidate is added only when its combined face
+    and scene vector is sufficiently different from every image already chosen.
     """
 
     if isinstance(foundation_count, bool) or not isinstance(foundation_count, int) or foundation_count < 1:
@@ -50,54 +51,65 @@ def select_adaptive_faces(
         or not 0 < novelty_distance < 2
     ):
         raise ValueError("novelty_distance must be between 0 and 2")
-    if not candidates:
-        return []
 
-    ordered = sorted(candidates, key=_candidate_key)
-    face_vectors = _validated_matrix(person, ordered, attr="face_embedding")
-    scene_vectors = _validated_matrix(person, ordered, attr="scene_embedding")
-    face_unit = _row_normalize(face_vectors)
-    scene_unit = _row_normalize(scene_vectors)
+    if len(foundation_candidates) < foundation_count:
+        raise ValueError(
+            f"at least {foundation_count} foundation-quality faces are required"
+        )
 
-    # Foundation: choose faces closest to the person's face-vector centroid.
-    centroid = np.mean(face_unit, axis=0)
+    expansion_by_face = {
+        item.source.face_id: item for item in expansion_candidates if item.source.face_id is not None
+    }
+    for item in foundation_candidates:
+        if item.source.face_id is None or item.source.face_id not in expansion_by_face:
+            raise ValueError("foundation candidates must be included in expansion candidates")
+
+    expansion = sorted(expansion_candidates, key=_candidate_key)
+    foundation = sorted(foundation_candidates, key=_candidate_key)
+    expansion_face = _validated_matrix(person, expansion, attr="face_embedding")
+    expansion_scene = _validated_matrix(person, expansion, attr="scene_embedding")
+    foundation_face = _validated_matrix(person, foundation, attr="face_embedding")
+
+    expansion_face_unit = _row_normalize(expansion_face)
+    expansion_scene_unit = _row_normalize(expansion_scene)
+    foundation_face_unit = _row_normalize(foundation_face)
+
+    centroid = np.mean(foundation_face_unit, axis=0)
     centroid_norm = float(np.linalg.norm(centroid))
     if not np.isfinite(centroid_norm) or centroid_norm == 0:
-        centrality = np.zeros(len(ordered), dtype=np.float32)
+        centrality = np.zeros(len(foundation), dtype=np.float32)
     else:
         centroid = centroid / centroid_norm
-        centrality = face_unit @ centroid
-    foundation_limit = min(foundation_count, len(ordered))
+        centrality = foundation_face_unit @ centroid
+
     foundation_indices = sorted(
-        range(len(ordered)),
-        key=lambda i: (-float(centrality[i]), _candidate_key(ordered[i])),
-    )[:foundation_limit]
+        range(len(foundation)),
+        key=lambda i: (-float(centrality[i]), _candidate_key(foundation[i])),
+    )[:foundation_count]
+    selected_faces = [foundation[index].source.face_id for index in foundation_indices]
 
-    selected = list(foundation_indices)
+    index_by_face = {item.source.face_id: index for index, item in enumerate(expansion)}
+    selected = [index_by_face[face_id] for face_id in selected_faces]
     selected_set = set(selected)
-    if len(selected) >= min(max_count, len(ordered)):
-        return [ordered[index] for index in selected]
 
-    # Expansion: equal-weight face and scene cosine geometry.
-    combined = np.concatenate((face_unit, scene_unit), axis=1)
+    combined = np.concatenate((expansion_face_unit, expansion_scene_unit), axis=1)
     combined *= np.float32(1.0 / np.sqrt(2.0))
 
-    while len(selected) < min(max_count, len(ordered)):
+    while len(selected) < min(max_count, len(expansion)):
+        selected_matrix = combined[selected]
         best_index: int | None = None
         best_distance = -1.0
 
-        selected_matrix = combined[selected]
-        for index in range(len(ordered)):
+        for index in range(len(expansion)):
             if index in selected_set:
                 continue
-            similarities = selected_matrix @ combined[index]
-            nearest_similarity = float(np.max(similarities))
+            nearest_similarity = float(np.max(selected_matrix @ combined[index]))
             distance = 1.0 - nearest_similarity
             if distance > best_distance + 1e-12:
                 best_index = index
                 best_distance = distance
             elif abs(distance - best_distance) <= 1e-12 and best_index is not None:
-                if _candidate_key(ordered[index]) < _candidate_key(ordered[best_index]):
+                if _candidate_key(expansion[index]) < _candidate_key(expansion[best_index]):
                     best_index = index
 
         if best_index is None or best_distance < novelty_distance:
@@ -105,7 +117,7 @@ def select_adaptive_faces(
         selected.append(best_index)
         selected_set.add(best_index)
 
-    return [ordered[index] for index in selected]
+    return [expansion[index] for index in selected]
 
 
 def _candidate_key(item: VectorFace) -> tuple[str, str, str]:
