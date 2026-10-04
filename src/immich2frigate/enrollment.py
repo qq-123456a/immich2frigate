@@ -140,15 +140,20 @@ def apply_rebuild_plan(
         for candidate in person_plan.candidates:
             if successful >= plan.target_per_person:
                 break
+            preview = immich.preview(candidate.source.asset_id)
             try:
-                preview = immich.preview(candidate.source.asset_id)
                 upload = prepare_candidate_upload(candidate.source, preview)
-                frigate.register_face(name, upload.encoded)
-            except Exception:
-                # A selected source can become unreadable between preflight and
-                # apply, or Frigate may reject a crop. Continue through the
-                # ordered spare pool but never lower the target silently.
+            except ValueError:
+                # A local crop/encoding rejection is known before any remote
+                # mutation, so it is safe to use the next representative.
                 continue
+
+            # From this point onward, fail closed. A transport error can be
+            # ambiguous: Frigate may have accepted the image even if the
+            # response was lost, so never auto-retry with another candidate.
+            response = frigate.register_face(name, upload.encoded)
+            if response.get("success") is not True:
+                raise RuntimeError("Frigate did not confirm face registration")
             successful += 1
 
         current = frigate.inventory().get(name, ())
