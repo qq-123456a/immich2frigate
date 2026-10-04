@@ -14,7 +14,7 @@ The upstream downloads face-model assets at runtime from [`NickM-27/facenet-onnx
 
 ## Frigate
 
-The initial compatibility primitives in `src/immich2frigate/frigate018.py` are derived from Frigate v0.18.0, commit `77a66e75c61862b048a07c1295877f4b31343504` (https://github.com/blakeblackshear/frigate/tree/v0.18.0). Copyright (c) 2026 Frigate, Inc. (Frigate™). Licensed under the MIT License:
+The source-derived compatibility routines in `src/immich2frigate/frigate018.py` and `src/immich2frigate/frigate_registration.py` are based on Frigate v0.18.0, commit `77a66e75c61862b048a07c1295877f4b31343504` (https://github.com/blakeblackshear/frigate/tree/v0.18.0). Copyright (c) 2026 Frigate, Inc. (Frigate™). Licensed under the MIT License:
 
 > The MIT License
 >

@@ -48,6 +48,14 @@ def test_large_class_drops_whole_vector_outliers_before_trim_mean() -> None:
     np.testing.assert_allclose(result, [1.0, 0.0])
 
 
+def test_class_mean_preserves_arcface_float32_dtype() -> None:
+    embeddings = [np.array([1.0, 0.0], dtype=np.float32) for _ in range(4)]
+
+    result = build_class_mean(embeddings)
+
+    assert result.dtype == np.float32
+
+
 def test_confidence_and_blur_penalty_match_frigate_one_shot_score() -> None:
     assert similarity_to_confidence(0.3) == pytest.approx(0.5)
     assert blur_confidence_reduction(119.99) == 0.06
@@ -58,6 +66,9 @@ def test_confidence_and_blur_penalty_match_frigate_one_shot_score() -> None:
 
 def test_profile_rejects_unverified_versions_and_models() -> None:
     require_target("0.18.0", "large")
+    require_target("0.18.0-77a66e75c618", "large")
+    with pytest.raises(ValueError):
+        require_target("0.18.0-deadbeef", "large")
     with pytest.raises(ValueError):
         require_target("0.18.1", "large")
     with pytest.raises(ValueError):

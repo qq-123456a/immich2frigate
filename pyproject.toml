@@ -18,6 +18,7 @@ compat = [
 curator = [
     "if-curator @ git+https://github.com/ds-sebastian/if_curator.git@7bf745c18e68282e1257dc4a99e0ea1c93511d44",
 ]
+vision = ["opencv-contrib-python-headless>=4.10"]
 dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]

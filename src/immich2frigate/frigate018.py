@@ -7,6 +7,7 @@ an end-to-end enrollment compatibility guarantee.
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 from PIL import Image
@@ -14,11 +15,17 @@ from PIL import Image
 PIPELINE_ID = "frigate-0.18.0-large-yunet-v1"
 TARGET_VERSION = "0.18.0"
 TARGET_MODEL_SIZE = "large"
+TARGET_COMMIT = "77a66e75c61862b048a07c1295877f4b31343504"
 
 
 def require_target(version: str, model_size: str) -> None:
     """Fail closed when the runtime is outside the source version we inspected."""
-    if version != TARGET_VERSION or model_size != TARGET_MODEL_SIZE:
+    version_matches = re.fullmatch(r"0\.18\.0(?:-([0-9a-fA-F]{7,40}))?", version)
+    commit_matches = version_matches and (
+        version_matches.group(1) is None
+        or TARGET_COMMIT.startswith(version_matches.group(1).lower())
+    )
+    if not commit_matches or model_size != TARGET_MODEL_SIZE:
         raise ValueError(
             f"This compatibility profile requires Frigate {TARGET_VERSION} with the "
             f"{TARGET_MODEL_SIZE!r} face model (got {version!r}, {model_size!r})"
@@ -66,9 +73,13 @@ def build_class_mean(
     """Match Frigate v0.18's vector outlier filter and per-dimension trim mean."""
     if not embeddings or not 0 <= trim < 0.5 or not 0 <= min_keep_frac <= 1:
         raise ValueError("embeddings must be non-empty and trim parameters must be valid")
-    values = np.stack(embeddings, axis=0).astype(np.float64, copy=False)
-    if values.ndim != 2 or not np.isfinite(values).all():
-        raise ValueError("embeddings must be a finite 2D array")
+    values = np.stack(embeddings, axis=0)
+    if (
+        values.ndim != 2
+        or not np.issubdtype(values.dtype, np.floating)
+        or not np.isfinite(values).all()
+    ):
+        raise ValueError("embeddings must be a finite 2D floating-point array")
     if len(values) < 5:
         return _trim_mean(values, trim)
 
