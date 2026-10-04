@@ -87,6 +87,50 @@ def test_dry_run_and_apply_rename_preserves_files_then_updates_binding(tmp_path)
     assert [row["state"] for row in journal] == ["PENDING", "VERIFIED"]
 
 
+def test_first_sync_auto_binds_then_id_drives_future_rename(tmp_path):
+    store = PersonIdentityRegistry(
+        tmp_path / "identities.json",
+        immich_origin="http://immich:2283/api",
+        frigate_origin=TARGET.origin,
+    )
+    client = FakeFrigate({"alex_smith": ("face.webp",)})
+    people = [Person(PERSON, "Alex Smith")]
+    first_plan = plan_person_name_sync(
+        TARGET, "http://immich:2283/api", people, client.inventory(), store
+    )
+    assert first_plan.actions[0]["status"] == "AUTO_BIND_REQUIRED"
+    first_result = apply_person_name_sync(
+        first_plan,
+        immich_origin="http://immich:2283/api",
+        people=people,
+        frigate_client=client,
+        registry=store,
+        journal_path=tmp_path / "private" / "operations.jsonl",
+        backup_verified=lambda: pytest.fail("local binding does not write to Frigate"),
+    )
+    assert first_result.auto_bound_person_ids == (PERSON,)
+    assert store.binding(PERSON).frigate_name == "alex_smith"
+    assert client.rename_calls == []
+
+    people = [Person(PERSON, "Alexandra Smith")]
+    rename_plan = plan_person_name_sync(
+        TARGET, "http://immich:2283/api", people, client.inventory(), store
+    )
+    assert rename_plan.actions[0]["status"] == "RENAME_REQUIRED"
+    result = apply_person_name_sync(
+        rename_plan,
+        immich_origin="http://immich:2283/api",
+        people=people,
+        frigate_client=client,
+        registry=store,
+        journal_path=tmp_path / "private" / "operations.jsonl",
+        backup_verified=lambda: True,
+    )
+    assert result.renamed_person_ids == (PERSON,)
+    assert store.binding(PERSON).frigate_name == "Alexandra_Smith"
+    assert client.faces == {"Alexandra_Smith": ("face.webp",)}
+
+
 def test_apply_refuses_destination_collision_without_mutation(tmp_path):
     store = registry(tmp_path / "identities.json")
     client = FakeFrigate({"Old_Name": ("1.jpg",), "New_Name": ()})

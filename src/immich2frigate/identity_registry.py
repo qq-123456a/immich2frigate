@@ -44,19 +44,6 @@ class PersonIdentityRegistry:
     def binding(self, immich_person_id: str) -> PersonIdentityBinding | None:
         return self._bindings.get(_person_id(immich_person_id))
 
-    def adopt(
-        self,
-        immich_person_id: str,
-        frigate_name: str,
-        frigate_faces: dict[str, tuple[str, ...]],
-    ) -> PersonIdentityBinding:
-        """Explicitly bind a reviewed existing label; never infer ownership."""
-
-        name = validate_frigate_name(frigate_name)
-        if name not in frigate_faces:
-            raise ValueError("Frigate label must exist before it can be adopted")
-        return self.bind(immich_person_id, name)
-
     def bind(self, immich_person_id: str, frigate_name: str) -> PersonIdentityBinding:
         """Create/update one binding after the Frigate result is confirmed."""
 
@@ -87,7 +74,7 @@ class PersonIdentityRegistry:
         return item
 
     def reconcile(self, people, frigate_faces: dict[str, tuple[str, ...]]) -> tuple[dict[str, str], ...]:
-        """Describe name changes without claiming or changing unmanaged labels."""
+        """Describe changes and bootstrap same-name labels in a managed library."""
 
         remote: dict[str, str] = {}
         for name in frigate_faces:
@@ -111,8 +98,18 @@ class PersonIdentityRegistry:
             old = self._bindings.get(person_id)
             current_remote = remote.get(normalized_name)
             if old is None:
-                status = "UNMANAGED_LABEL_EXISTS" if current_remote else "UNBOUND_PERSON"
-                actions.append({"person_id": person_id, "name": new_name, "status": status})
+                # The Frigate library is owned by this integration. A same-name
+                # label with registered faces is therefore a deterministic first
+                # sync match, rather than a manual adoption decision.
+                status = (
+                    "AUTO_BIND_REQUIRED"
+                    if current_remote and frigate_faces[current_remote]
+                    else "UNBOUND_PERSON"
+                )
+                action = {"person_id": person_id, "name": new_name, "status": status}
+                if status == "AUTO_BIND_REQUIRED":
+                    action["frigate_name"] = current_remote
+                actions.append(action)
                 continue
 
             old_remote = frigate_faces.get(old.frigate_name)

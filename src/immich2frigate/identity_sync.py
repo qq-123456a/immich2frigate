@@ -54,6 +54,7 @@ class NameSyncResult:
     renamed_person_ids: tuple[str, ...]
     final_inventory_sha256: str
     recovered_person_ids: tuple[str, ...] = ()
+    auto_bound_person_ids: tuple[str, ...] = ()
 
 
 def plan_person_name_sync(
@@ -163,6 +164,9 @@ def _apply_person_name_sync_locked(
     recovered = _recover_journaled_operations(
         journal, plan.target, plan.immich_origin, inventory, registry
     )
+    auto_binds = [
+        action for action in plan.actions if action["status"] == "AUTO_BIND_REQUIRED"
+    ]
     renames = [action for action in plan.actions if action["status"] == "RENAME_REQUIRED"]
     unsafe = [
         action
@@ -183,13 +187,27 @@ def _apply_person_name_sync_locked(
     if unsafe:
         raise ValueError("name sync contains labels requiring manual review")
     _preflight_renames(renames, inventory)
+    if renames and backup_verified() is not True:
+        raise ValueError("verified Frigate backup is required before renaming")
+
+    auto_bound_ids: list[str] = []
+    for action in auto_binds:
+        # The plan is revalidated against the live inventory above. This local
+        # write records the deterministic same-name match; it does not mutate
+        # Frigate and therefore does not require the remote-write backup step.
+        frigate_name = action["frigate_name"]
+        if frigate_name not in inventory or not inventory[frigate_name]:
+            raise ValueError("automatic identity match no longer has registered faces")
+        registry.bind(action["person_id"], frigate_name)
+        auto_bound_ids.append(action["person_id"])
     if not renames:
         return NameSyncResult(
-            plan.plan_id, (), _inventory_hash(inventory), tuple(sorted(recovered))
+            plan.plan_id,
+            (),
+            _inventory_hash(inventory),
+            tuple(sorted(recovered)),
+            tuple(sorted(auto_bound_ids)),
         )
-
-    if backup_verified() is not True:
-        raise ValueError("verified Frigate backup is required before renaming")
 
     renamed_ids: list[str] = []
     for action in renames:
@@ -264,6 +282,7 @@ def _apply_person_name_sync_locked(
         tuple(renamed_ids),
         _inventory_hash(inventory),
         tuple(sorted(recovered)),
+        tuple(sorted(auto_bound_ids)),
     )
 
 
