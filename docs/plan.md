@@ -14,17 +14,18 @@
 - A GET-only Frigate adapter checks the exact version/model, verifies the internal API's administrator profile and enabled face recognition, reads existing face names/filenames, and retrieves registered face images using validated, URL-quoted path segments. It rejects redirects, unsafe path components, oversized responses, and unexpected schema.
 - A read-only Immich adapter uses only the pinned upstream people/search/face-box/image methods. It returns minimal metadata and in-memory BGR previews; it does not use the upstream CLI, persistent face cache, or export functions.
 - An in-memory selector adapter reuses the pinned if-curator diversity/identity selection, checks vector shape/finiteness/non-zero norm, and ignores its legacy 0.17 score. It does not prove the vectors came from Frigate's verified 0.18 model.
-- Revalidate the exact final image bytes that would be uploaded. Keep selection and any future Frigate write client separate.
+- Revalidate the exact final image bytes that would be uploaded. Keep selection and the fixed-route Frigate write client separate.
 - `dry_run.py` builds a deterministic in-memory JSON review plan from selected upload bytes, records source/upload/simulated registered-image hashes, and never uploads, deletes, renames, or records successful sync. Entries remain explicitly marked as model-unverified. Existing labels are treated as manual and skipped.
 
-**Current gate:** the dry-run plan builder is implemented, but no plan has been generated from real services or images. ArcFace embedding generation, exact runtime model assets/OpenCV build, end-to-end image equivalence, and isolated integration/recovery verification remain open. No live Immich or Frigate instance has been contacted by this work.
+**Current gate:** the dry-run builder, fixed-route Frigate write client, and in-memory preview crop encoder are implemented. The live enrollment trial still needs an explicitly selected Immich display name and an existing local `IMMICH_API_KEY`. ArcFace embedding generation, exact runtime model assets/OpenCV build, end-to-end image equivalence, and isolated integration/recovery verification remain open. The trial will be checked against the live face inventory and Frigate recognition endpoint.
 
-## C. Controlled additive sync
+## C. Controlled enrollment trial and additive sync
 
 - Persist each intended operation before sending it, with instance identity, person/asset IDs, target, and image SHA-256.
 - Upload sequentially. If the remote result is ambiguous, record `UNKNOWN_RESULT` / `NEEDS_REVIEW`; do not blindly retry or delete.
 - Back up with SQLite's online backup API and verify the backup. Never auto-restore over later manual changes.
-- Refuse to take ownership of manual Frigate files. Do not rename, replace, or delete in the first writable version.
+- A one-time, user-authorized destructive trial may back up the live Frigate database and face library, remove registered face images by explicit inventory IDs, and enroll one explicitly named Immich person. This does not authorize routine deletion behavior.
+- Routine sync remains additive: refuse to take ownership of manual Frigate files and do not rename, replace, or delete them.
 
 ## D. Scheduled operation
 
