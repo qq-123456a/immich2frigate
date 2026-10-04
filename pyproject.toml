@@ -10,6 +10,9 @@ requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
 
+[project.scripts]
+immich2frigate = "immich2frigate.cli:main"
+
 [project.optional-dependencies]
 compat = [
     "numpy>=2.2.6",
@@ -18,6 +21,7 @@ compat = [
 curator = [
     "if-curator @ git+https://github.com/ds-sebastian/if_curator.git@7bf745c18e68282e1257dc4a99e0ea1c93511d44",
 ]
+database = ["psycopg[binary]>=3.2"]
 vision = ["opencv-contrib-python-headless>=4.10"]
 dev = ["pytest>=8.0"]
 
