@@ -30,7 +30,7 @@ class ImmichSettings:
     immich_api_key: str = field(repr=False)
 
     @classmethod
-    def from_env(cls, environ: dict[str, str] | None = None) -> ImmichSettings:
+    def from_env(cls, environ: dict[str, str] | None = None) -> "ImmichSettings":
         env = os.environ if environ is None else environ
         immich_key = env.get("IMMICH_API_KEY", "").strip()
         if not immich_key:
@@ -42,14 +42,30 @@ class ImmichSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ImmichDatabaseSettings:
+    """Read-only PostgreSQL connection used only for existing Immich vectors."""
+
+    database_url: str = field(repr=False)
+
+    @classmethod
+    def from_env(cls, environ: dict[str, str] | None = None) -> "ImmichDatabaseSettings":
+        env = os.environ if environ is None else environ
+        value = env.get("IMMICH_DATABASE_URL", "").strip()
+        if not value:
+            raise ValueError("IMMICH_DATABASE_URL is required")
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+            raise ValueError("IMMICH_DATABASE_URL must be a PostgreSQL connection URL")
+        return cls(database_url=value)
+
+
+@dataclass(frozen=True, slots=True)
 class FrigateSettings:
-    """Frigate API URL. This client is read-only and uses the internal API port."""
+    """Frigate internal API URL."""
 
     frigate_url: str
 
     @classmethod
-    def from_env(cls, environ: dict[str, str] | None = None) -> FrigateSettings:
+    def from_env(cls, environ: dict[str, str] | None = None) -> "FrigateSettings":
         env = os.environ if environ is None else environ
-        return cls(
-            frigate_url=_required_url("FRIGATE_URL", env),
-        )
+        return cls(frigate_url=_required_url("FRIGATE_URL", env))
