@@ -104,6 +104,27 @@ def test_delete_faces_uses_frigates_normalized_folder_name() -> None:
     assert opener.requests[0].full_url == "http://frigate:5000/api/faces/A_B/delete"
 
 
+def test_rename_face_uses_fixed_put_route_and_preserves_exact_old_label() -> None:
+    opener = FakeOpener([b'{"success":true,"message":"renamed"}'])
+
+    result = client(opener).rename_face("Old Name", "New Name")
+
+    request = opener.requests[0]
+    assert result["success"] is True
+    assert request.method == "PUT"
+    assert request.full_url == "http://frigate:5000/api/faces/Old%20Name/rename"
+    assert json.loads(request.data) == {"new_name": "New_Name"}
+
+
+def test_rename_face_rejects_unsupported_names_before_request() -> None:
+    opener = FakeOpener([])
+    with pytest.raises(ValueError):
+        client(opener).rename_face("Old", "name/unsafe")
+    with pytest.raises(ValueError):
+        client(opener).rename_face("Old", "x" * 51)
+    assert opener.requests == []
+
+
 def test_recognize_uses_the_same_fixed_multipart_contract() -> None:
     png = b"\x89PNG\r\n\x1a\nimage"
     opener = FakeOpener([b'{"success":true,"face_name":"Amy"}'])

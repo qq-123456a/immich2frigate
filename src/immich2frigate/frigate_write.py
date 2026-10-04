@@ -1,9 +1,9 @@
 """Small, allow-listed write client for Frigate 0.18 face registration.
 
 The read-only adapter remains the source of truth for inventory and target
-preflight.  This module adds only the five operations needed by the enrollment
-workflow: inventory, create a face name, register one image, delete explicitly
-listed images, and recognize one image.  There is deliberately no arbitrary
+preflight. This module adds only the fixed operations needed by the enrollment
+workflow: inventory, create a face name, register one image, rename a face,
+delete explicitly listed images, and recognize one image. There is no arbitrary
 request method and no operation for Frigate's ``train`` staging directory.
 """
 
@@ -13,7 +13,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from urllib.request import Request
 
 from .frigate_client import (
@@ -78,6 +78,23 @@ class FrigateWriteClient(FrigateReadOnlyClient):
             headers={"Accept": "application/json", **request_headers},
         )
         return _json_object(response, "register face response")
+
+    def rename_face(self, old_name: str, new_name: str) -> dict[str, object]:
+        """Rename a face label while keeping its registered images in Frigate."""
+
+        old_name = _require_rename_name(old_name, normalize=False)
+        new_name = _require_rename_name(new_name)
+        if old_name == new_name:
+            raise ValueError("old_name and new_name must differ")
+        body = json.dumps(
+            {"new_name": new_name}, ensure_ascii=True, separators=(",", ":")
+        ).encode("ascii")
+        response = self._put(
+            f"/api/faces/{quote(old_name, safe='')}/rename",
+            body,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        return _json_object(response, "rename face response")
 
     def delete_faces(
         self,
@@ -181,6 +198,39 @@ class FrigateWriteClient(FrigateReadOnlyClient):
             raise FrigateApiError("Frigate response exceeded the size limit")
         return response_body
 
+    def _put(self, path: str, body: bytes, *, headers: Mapping[str, str]) -> bytes:
+        """Send a fixed Frigate rename route and return a bounded response."""
+
+        request = Request(
+            self._origin + path,
+            data=body,
+            headers={"X-Cache-Bypass": "1", **headers},
+            method="PUT",
+        )
+        try:
+            with self._opener.open(request, timeout=self._timeout) as response:
+                final_parts = urlsplit(response.geturl())
+                origin_parts = urlsplit(self._origin)
+                if (final_parts.scheme, final_parts.netloc) != (
+                    origin_parts.scheme,
+                    origin_parts.netloc,
+                ):
+                    raise FrigateApiError("Frigate redirected outside its configured origin")
+                response_body = response.read(_MAX_RESPONSE_BYTES + 1)
+        except FrigateApiError:
+            raise
+        except ValueError:
+            raise FrigateApiError("Frigate returned an invalid response URL") from None
+        except HTTPError as error:
+            raise FrigateApiError(f"Frigate returned HTTP {error.code}") from None
+        except (URLError, TimeoutError, OSError) as error:
+            raise FrigateApiError(
+                f"Frigate request failed ({type(error).__name__})"
+            ) from None
+        if len(response_body) > _MAX_RESPONSE_BYTES:
+            raise FrigateApiError("Frigate response exceeded the size limit")
+        return response_body
+
 
 def _require_write_name(name: str) -> str:
     """Validate one remote face label and exclude the staging directory."""
@@ -193,6 +243,23 @@ def _require_write_name(name: str) -> str:
     if name == "train":
         raise ValueError("Frigate's train staging directory is not writable")
     return frigate_face_name(name)
+
+
+def _require_rename_name(name: str, *, normalize: bool = True) -> str:
+    """Apply Frigate 0.18's narrower rename-label validation rules."""
+
+    if normalize:
+        name = _require_write_name(name)
+    else:
+        _require_face_segment(name, "face name")
+        if not name.strip() or name.strip() != name or name == "train":
+            raise ValueError("face name must be a registered label")
+    if len(name) > 50 or any(
+        not (char.isalpha() or char.isdigit() or char.isspace() or char in "'_- ")
+        for char in name
+    ):
+        raise ValueError("face name is not valid for Frigate 0.18 rename")
+    return name
 
 
 def _require_upload(image_bytes: bytes) -> tuple[bytes, str, str]:
