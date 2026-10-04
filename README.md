@@ -28,6 +28,13 @@ py -3.12 -m venv .venv
 python -m pip install -e ".[curator]"
 ```
 
+To work only on the compatibility primitives and their regression suite:
+
+```powershell
+python -m pip install -e ".[compat,dev]"
+python -m pytest
+```
+
 For local development, copy `.env.example` to `.env` and fill in credentials locally. `.env`, if-curator's `.immich_config.json`, `.if_cache/`, `frigate_train/`, and other runtime data are ignored by Git. Prefer Docker secrets or environment injection for deployments. Keep HTTP traffic confined to an isolated trusted network; use HTTPS across untrusted networks.
 
 The application reads Immich and Frigate credentials from the process environment only. It does not call if-curator's interactive CLI, which has its own plaintext local connection-file behavior.

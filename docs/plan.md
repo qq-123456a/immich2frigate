@@ -10,7 +10,7 @@
 
 - Target Frigate 0.18.0 with the `large` model first.
 - Validate preprocessing, crop selection, feature extraction, class-center aggregation, blur penalty, score rounding, and unknown handling against the exact target version.
-- Initial pure primitives now cover ArcFace preprocessing, class-center aggregation, and one-shot confidence/blur scoring. They remain unverified against the complete enrollment path.
+- Initial pure primitives now cover ArcFace preprocessing, class-center aggregation, profile version gating, and one-shot confidence/blur scoring, with regression tests for those behaviors. They remain unverified against the complete enrollment path.
 - Revalidate the exact final image bytes that would be uploaded. Keep selection and any future Frigate write client separate.
 - Emit a reviewable dry-run plan. Dry-run may not upload, delete, rename, or record a successful sync.
 
