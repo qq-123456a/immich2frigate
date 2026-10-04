@@ -1,0 +1,37 @@
+# Local credentials and connection settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Local face data, exports, state, reports, and backups must never enter Git.
+data/
+faces/
+face-library/
+exports/
+manifests/
+reports/
+backups/
+*.sqlite
+*.sqlite3
+*.db
+*.wal
+*.shm
+*.embeddings
+
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.DS_Store
+Thumbs.db

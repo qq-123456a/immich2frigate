@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "immich2frigate"
+version = "0.1.0a0"
+description = "Safely prepare and synchronize Immich face training images to Frigate"
+requires-python = ">=3.12"
+license = "MIT"
+readme = "README.md"
+
+[project.optional-dependencies]
+curator = [
+    "if-curator @ git+https://github.com/ds-sebastian/if_curator.git@7bf745c18e68282e1257dc4a99e0ea1c93511d44",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
