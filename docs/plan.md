@@ -17,7 +17,7 @@
 - Revalidate the exact final image bytes that would be uploaded. Keep selection and the fixed-route Frigate write client separate.
 - `dry_run.py` builds a deterministic in-memory JSON review plan from selected upload bytes, records source/upload/simulated registered-image hashes, and never uploads, deletes, renames, or records successful sync. Entries remain explicitly marked as model-unverified. Existing labels are treated as manual and skipped.
 
-**Current gate:** the dry-run builder, fixed-route Frigate write client, and in-memory preview crop encoder are implemented. The live enrollment trial still needs an explicitly selected Immich display name and an existing local `IMMICH_API_KEY`. ArcFace embedding generation, exact runtime model assets/OpenCV build, end-to-end image equivalence, and isolated integration/recovery verification remain open. The trial will be checked against the live face inventory and Frigate recognition endpoint.
+**Current gate:** the dry-run builder, fixed-route Frigate write client, in-memory preview crop encoder, and Immich v3 person-thumbnail reader are implemented. One local enrollment trial was verified using a private backup and operation journal; the same stored Frigate image was recognized under its enrolled name. ArcFace embedding generation, exact runtime model assets/OpenCV build, end-to-end image equivalence, and isolated integration/recovery verification remain open. No credentials, person identifiers, or image data are included in the repository.
 
 ## C. Controlled enrollment trial and additive sync
 
