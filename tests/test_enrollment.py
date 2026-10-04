@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
@@ -10,6 +8,15 @@ from immich2frigate.immich_client import FaceCandidate, PersonRecord
 from immich2frigate.selection import VectorFace
 
 PERSON = "00000000-0000-4000-8000-000000000001"
+
+
+def clear_color_image() -> np.ndarray:
+    image = np.empty((100, 100, 3), dtype=np.uint8)
+    image[::2, ::2] = (30, 180, 240)
+    image[1::2, ::2] = (220, 40, 80)
+    image[::2, 1::2] = (220, 40, 80)
+    image[1::2, 1::2] = (30, 180, 240)
+    return image
 
 
 class FakeImmich:
@@ -22,11 +29,12 @@ class FakeImmich:
                 asset_id=f"10000000-0000-4000-8000-{i:012d}",
                 taken_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",
                 checksum=str(i),
-                box=(0, 0, 10, 10),
-                frame=(10, 10),
+                box=(0, 0, 100, 100),
+                frame=(100, 100),
             )
             for i in range(1, count + 1)
         ]
+        self.image = clear_color_image()
 
     def people(self):
         return [self.person]
@@ -35,27 +43,40 @@ class FakeImmich:
         assert person_id == PERSON
         return self.items
 
+    def preview(self, asset_id):
+        return self.image.copy()
+
 
 class FakeVectors:
+    def __init__(self, diverse: bool = False):
+        self.diverse = diverse
+
     def vectors_for_person(self, person, candidates):
-        return [
-            VectorFace(
-                source=item,
-                face_embedding=np.array([1.0, float(i + 1)], np.float32),
-                scene_embedding=np.array([float(i + 1), 1.0], np.float32),
-            )
-            for i, item in enumerate(candidates)
-        ]
+        rows = []
+        for i, item in enumerate(candidates):
+            if self.diverse and i >= 5:
+                angle = (i - 4) * np.pi / 3
+                face = np.array([np.cos(angle), np.sin(angle)], np.float32)
+                scene = np.array([np.sin(angle), np.cos(angle)], np.float32)
+            else:
+                face = np.array([1.0, (i + 1) * 0.001], np.float32)
+                scene = np.array([1.0, (i + 1) * 0.001], np.float32)
+            rows.append(VectorFace(item, face, scene))
+        return rows
 
 
-def test_rebuild_plan_requires_full_30_before_destructive_phase():
-    with pytest.raises(ValueError, match="30 are required"):
-        build_rebuild_plan(FakeImmich(29), FakeVectors())
+def test_rebuild_plan_requires_only_five_foundation_quality_faces():
+    with pytest.raises(ValueError, match="5 are required"):
+        build_rebuild_plan(FakeImmich(4), FakeVectors())
 
-    plan = build_rebuild_plan(FakeImmich(35), FakeVectors())
-    assert plan.target_per_person == 30
-    assert plan.total_images == 30
-    assert len(plan.people[0].candidates) == 35
+    plan = build_rebuild_plan(FakeImmich(20), FakeVectors())
+    assert plan.total_images == 5
+    assert plan.people[0].target_count == 5
+
+
+def test_rebuild_plan_expands_when_distribution_is_genuinely_diverse():
+    plan = build_rebuild_plan(FakeImmich(12), FakeVectors(diverse=True))
+    assert 5 < plan.people[0].target_count <= 30
 
 
 class FakeFrigate:
