@@ -5,6 +5,10 @@
 *.pem
 *.key
 secrets/
+.immich_config.json
+.if_cache/
+frigate_train/
+.incomplete/
 
 # Local face data, exports, state, reports, and backups must never enter Git.
 data/

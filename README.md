@@ -2,11 +2,11 @@
 
 Safely prepare and synchronize a small set of useful face training images from Immich to Frigate's native face recognition library.
 
-The project reuses the image selection work in [`if-curator`](https://github.com/ds-sebastian/if_curator), adds a compatibility layer for a narrowly verified Frigate version, and keeps any write operations behind a separate synchronization layer.
+The project plans to reuse the image selection work in [`if-curator`](https://github.com/ds-sebastian/if_curator), add a compatibility layer for a narrowly verified Frigate version, and keep any write operations behind a separate synchronization layer.
 
 ## Status
 
-This repository is at the initial implementation stage. The upstream baseline is pinned in [`UPSTREAM.md`](UPSTREAM.md). The first supported target is Frigate **0.18.0 with the `large` face model**. No Frigate write or delete operation is implemented yet.
+This repository is at the initial implementation stage. The upstream baseline is pinned in [`UPSTREAM.md`](UPSTREAM.md). Frigate **0.18.0 with the `large` face model** is the first target. [`frigate018.py`](src/immich2frigate/frigate018.py) contains initial pure preprocessing and scoring primitives; they are not yet an end-to-end verified compatibility adapter. No Frigate write or delete operation is implemented.
 
 The first usable release is intended to be additive and conservative:
 
@@ -28,7 +28,7 @@ py -3.12 -m venv .venv
 python -m pip install -e ".[curator]"
 ```
 
-For local development, copy `.env.example` to `.env` and fill in credentials locally. `.env` and runtime data are ignored by Git. Prefer Docker secrets or environment injection for deployments.
+For local development, copy `.env.example` to `.env` and fill in credentials locally. `.env`, if-curator's `.immich_config.json`, `.if_cache/`, `frigate_train/`, and other runtime data are ignored by Git. Prefer Docker secrets or environment injection for deployments. Keep HTTP traffic confined to an isolated trusted network; use HTTPS across untrusted networks.
 
 The application reads Immich and Frigate credentials from the process environment only. It does not call if-curator's interactive CLI, which has its own plaintext local connection-file behavior.
 
