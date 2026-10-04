@@ -13,7 +13,7 @@ The first usable release is intended to be additive and conservative:
 - Read Immich people, candidate face boxes, and previews without invoking upstream cache or export paths.
 - Read Frigate version, administrator profile, face-recognition settings, existing face-library filenames, and registered face images through the allow-listed GET-only client.
 - Prepare and validate the exact image bytes intended for Frigate.
-- Produce a reviewable plan before any write.
+- Produce a deterministic JSON dry-run plan with upload and simulated registered-image hashes before any write. Until model assets are verified, proposed entries are explicitly marked unverified and the plan cannot enable writes. The plan is returned in memory; it contains person/asset IDs and names, so keep any exported copy private.
 - Treat ambiguous remote results as requiring review; never blindly retry or delete.
 - Keep credentials in environment variables or a runtime secret mount. The application must not save them to a config file, log, manifest, or report.
 

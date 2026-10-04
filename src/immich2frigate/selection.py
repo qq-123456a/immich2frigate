@@ -28,8 +28,8 @@ def select_diverse_faces(
     """Select diverse, identity-consistent faces entirely in memory.
 
     The pinned selector's `recognized` score uses Frigate 0.17 math; this
-    wrapper intentionally ignores it. Embeddings must come from the separately
-    validated Frigate 0.18 model pipeline.
+    wrapper intentionally ignores it. This function checks vector shape and
+    numeric validity, but cannot establish embedding model provenance.
     """
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError("count must be a positive integer")

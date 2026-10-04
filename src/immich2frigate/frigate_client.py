@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -17,6 +18,15 @@ _FACE_EXTENSIONS = (".webp", ".png", ".jpg", ".jpeg")
 
 class FrigateApiError(RuntimeError):
     """A bounded, non-sensitive Frigate API failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class FrigateTarget:
+    """The non-secret identity fields verified during a Frigate preflight."""
+
+    origin: str = field(repr=False)
+    version: str
+    model_size: str
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -94,7 +104,7 @@ class FrigateReadOnlyClient:
         if role != "admin":
             raise FrigateApiError("Frigate internal API did not grant the required admin role")
 
-    def verify_target(self) -> None:
+    def verify_target(self) -> FrigateTarget:
         """Require the inspected version, enabled recognition, large model, and admin role."""
         version = self.version()
         self._require_admin()
@@ -113,6 +123,7 @@ class FrigateReadOnlyClient:
             require_target(version, model_size)
         except ValueError:
             raise FrigateApiError("Frigate does not match the verified compatibility target") from None
+        return FrigateTarget(self._origin, version, model_size)
 
     def faces(self) -> dict[str, tuple[str, ...]]:
         """Return validated names and supported image filenames, never image bytes."""

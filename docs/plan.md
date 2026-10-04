@@ -13,11 +13,11 @@
 - Source-derived primitives now cover ArcFace preprocessing, float32 class-center aggregation, profile version gating, confidence/blur scoring, Frigate's 1080px YuNet input scaling/largest-face crop/WebP-100 registration transform, LBF eye alignment, and Laplacian blur measurement. Synthetic regression tests cover these transforms. The detector and landmark models must still be the exact verified Frigate assets before image-equivalence can be claimed.
 - A GET-only Frigate adapter checks the exact version/model, verifies the internal API's administrator profile and enabled face recognition, reads existing face names/filenames, and retrieves registered face images using validated, URL-quoted path segments. It rejects redirects, unsafe path components, oversized responses, and unexpected schema.
 - A read-only Immich adapter uses only the pinned upstream people/search/face-box/image methods. It returns minimal metadata and in-memory BGR previews; it does not use the upstream CLI, persistent face cache, or export functions.
-- An in-memory selector adapter reuses the pinned if-curator diversity/identity selection while validating Frigate embedding shapes and ignoring its legacy 0.17 score.
+- An in-memory selector adapter reuses the pinned if-curator diversity/identity selection, checks vector shape/finiteness/non-zero norm, and ignores its legacy 0.17 score. It does not prove the vectors came from Frigate's verified 0.18 model.
 - Revalidate the exact final image bytes that would be uploaded. Keep selection and any future Frigate write client separate.
-- Emit a reviewable dry-run plan. Dry-run may not upload, delete, rename, or record a successful sync.
+- `dry_run.py` builds a deterministic in-memory JSON review plan from selected upload bytes, records source/upload/simulated registered-image hashes, and never uploads, deletes, renames, or records successful sync. Entries remain explicitly marked as model-unverified. Existing labels are treated as manual and skipped.
 
-**Current gate:** there is not yet a usable sync plan. Candidate retrieval, service inventory, model-injected registration transforms, and the selector wrapper are implemented, but ArcFace embedding generation, exact runtime model assets/OpenCV build, end-to-end image equivalence, and a persisted/exportable review plan remain open. Integration/recovery verification remains open. No live Immich or Frigate instance has been contacted by this work.
+**Current gate:** the dry-run plan builder is implemented, but no plan has been generated from real services or images. ArcFace embedding generation, exact runtime model assets/OpenCV build, end-to-end image equivalence, and isolated integration/recovery verification remain open. No live Immich or Frigate instance has been contacted by this work.
 
 ## C. Controlled additive sync
 
