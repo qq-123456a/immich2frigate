@@ -9,6 +9,7 @@ from uuid import UUID
 import numpy as np
 
 from .settings import ImmichSettings
+from .frigate_names import frigate_face_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +79,7 @@ class ImmichReadOnlyClient:
                 raise ValueError("Immich person name cannot be used as a Frigate face name")
             if person_id in ids:
                 raise ValueError("Immich returned a duplicate person ID")
-            normalized_name = name.casefold()
+            normalized_name = frigate_face_name(name).casefold()
             if normalized_name in names:
                 raise ValueError("Immich returned names that collide in Frigate")
             ids.add(person_id)

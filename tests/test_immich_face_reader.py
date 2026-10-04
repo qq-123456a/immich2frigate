@@ -68,6 +68,18 @@ def test_people_paginates_until_v3_has_next_page_is_false() -> None:
     assert len(opener.requests) == 2
 
 
+def test_people_rejects_names_that_collapse_to_same_frigate_label() -> None:
+    origin = "http://immich:2283"
+    people = {"people": [
+        {"id": "00000000-0000-4000-8000-000000000001", "name": "A B"},
+        {"id": "00000000-0000-4000-8000-000000000002", "name": "A_B"},
+    ], "hasNextPage": False}
+    opener = Opener([(json.dumps(people).encode(), origin + "/api/people?page=1&size=500", "application/json")])
+
+    with pytest.raises(ImmichApiError, match="duplicate"):
+        ImmichFaceReader(ImmichSettings(origin, "test-key"), opener=opener).people()
+
+
 def test_person_thumbnail_is_bounded_and_signature_checked() -> None:
     origin = "http://immich:2283"
     person_id = "00000000-0000-4000-8000-000000000001"

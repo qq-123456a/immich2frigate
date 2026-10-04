@@ -9,6 +9,7 @@ from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import UUID
 
+from .frigate_names import frigate_face_name
 from .settings import ImmichSettings
 
 _MAX_RESPONSE_BYTES = 20 * 1024 * 1024
@@ -90,10 +91,11 @@ class ImmichFaceReader:
                 name = name.strip()
                 if name in {".", "..", "train"} or any(c in name for c in "/\\") or any(ord(c) < 32 or ord(c) == 127 for c in name):
                     raise ImmichApiError("Immich returned a person name unsafe for Frigate")
-                if person_id in ids or name.casefold() in names:
+                normalized_name = frigate_face_name(name).casefold()
+                if person_id in ids or normalized_name in names:
                     raise ImmichApiError("Immich returned duplicate person IDs or names")
                 ids.add(person_id)
-                names.add(name.casefold())
+                names.add(normalized_name)
                 records.append(ImmichPerson(person_id=person_id, name=name))
 
             if not has_next:

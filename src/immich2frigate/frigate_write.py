@@ -24,6 +24,7 @@ from .frigate_client import (
     FrigateApiError,
     FrigateReadOnlyClient,
 )
+from .frigate_names import frigate_face_name
 
 
 # Face crops produced by the enrollment pipeline are normally a few hundred KB.
@@ -57,7 +58,7 @@ class FrigateWriteClient(FrigateReadOnlyClient):
     def create_face(self, name: str) -> dict[str, object]:
         """Create a face folder for ``name`` and return Frigate's response."""
 
-        _require_write_name(name)
+        name = _require_write_name(name)
         body = self._post(
             f"/api/faces/{quote(name, safe='')}/create",
             b"",
@@ -68,7 +69,7 @@ class FrigateWriteClient(FrigateReadOnlyClient):
     def register_face(self, name: str, image_bytes: bytes) -> dict[str, object]:
         """Upload one bounded image to an existing Frigate face name."""
 
-        _require_write_name(name)
+        name = _require_write_name(name)
         payload, extension, content_type = _require_upload(image_bytes)
         body, request_headers = _multipart_body(payload, extension, content_type)
         response = self._post(
@@ -90,7 +91,7 @@ class FrigateWriteClient(FrigateReadOnlyClient):
         no-op for a verified deletion.
         """
 
-        _require_write_name(name)
+        name = _require_write_name(name)
         if isinstance(image_ids, (str, bytes, bytearray)) or not isinstance(
             image_ids, Sequence
         ):
@@ -181,7 +182,7 @@ class FrigateWriteClient(FrigateReadOnlyClient):
         return response_body
 
 
-def _require_write_name(name: str) -> None:
+def _require_write_name(name: str) -> str:
     """Validate one remote face label and exclude the staging directory."""
 
     _require_face_segment(name, "face name")
@@ -191,6 +192,7 @@ def _require_write_name(name: str) -> None:
         raise ValueError("face name must not have surrounding or only whitespace")
     if name == "train":
         raise ValueError("Frigate's train staging directory is not writable")
+    return frigate_face_name(name)
 
 
 def _require_upload(image_bytes: bytes) -> tuple[bytes, str, str]:

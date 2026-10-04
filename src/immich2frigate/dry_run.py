@@ -13,6 +13,7 @@ from uuid import UUID
 from .frigate018 import require_target
 from .frigate_client import FrigateTarget
 from .frigate_registration import prepare_registered_upload
+from .frigate_names import frigate_face_name
 from .immich_client import FaceCandidate, PersonRecord
 
 
@@ -78,7 +79,7 @@ def build_dry_run_plan(
     for person in people:
         _require_uuid(person.person_id, "person ID")
         _require_safe_name(person.name)
-        normalized = person.name.casefold()
+        normalized = frigate_face_name(person.name).casefold()
         if normalized in name_owners:
             raise ValueError("people contains Frigate name collisions")
         name_owners[normalized] = person.person_id
@@ -87,7 +88,7 @@ def build_dry_run_plan(
         _require_safe_name(name)
     existing_by_name: dict[str, str] = {}
     for name in existing_faces:
-        normalized = name.casefold()
+        normalized = frigate_face_name(name).casefold()
         if normalized in existing_by_name:
             raise ValueError("Frigate has case-colliding face labels")
         existing_by_name[normalized] = name
@@ -112,6 +113,7 @@ def build_dry_run_plan(
         entry = {
             "person_id": person.person_id,
             "person_name": person.name,
+            "frigate_name": frigate_face_name(person.name),
             "asset_id": candidate.source.asset_id,
             "face_id": candidate.source.face_id,
             "upload_bytes": len(candidate.upload_bytes),
@@ -122,7 +124,7 @@ def build_dry_run_plan(
             "registered_box": None,
             "manual_review_required": True,
         }
-        existing_name = existing_by_name.get(person.name.casefold())
+        existing_name = existing_by_name.get(frigate_face_name(person.name).casefold())
         if existing_name is not None:
             entry["status"] = "SKIPPED_EXISTING_LABEL"
             entry["existing_label"] = existing_name

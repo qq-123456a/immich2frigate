@@ -85,6 +85,16 @@ def test_existing_face_label_is_never_claimed_or_modified():
     assert plan.entries[0]["simulated_registered_image_sha256"] is None
 
 
+def test_existing_underscored_label_matches_immich_name_with_spaces():
+    person, candidate = make_candidate()
+    target = FrigateTarget("http://frigate:5000", "0.18.0", "large")
+    plan = build_dry_run_plan(target, [person], [candidate], {"Synthetic_Person": ("manual.jpg",)}, detector=object())
+
+    assert plan.entries[0]["frigate_name"] == "Synthetic_Person"
+    assert plan.entries[0]["status"] == "SKIPPED_EXISTING_LABEL"
+    assert plan.entries[0]["existing_label"] == "Synthetic_Person"
+
+
 def test_plan_marks_undetected_faces_and_rejects_duplicates():
     image = np.full((48, 64, 3), 140, dtype=np.uint8)
     ok, encoded = cv2.imencode(".jpg", image)

@@ -55,7 +55,7 @@ def test_create_face_is_fixed_post_with_quoted_name() -> None:
     request = opener.requests[0]
     assert result["success"] is False  # Frigate 0.18 has this response quirk.
     assert request.method == "POST"
-    assert request.full_url == "http://frigate:5000/api/faces/A%20B/create"
+    assert request.full_url == "http://frigate:5000/api/faces/A_B/create"
     assert request.data == b""
 
 
@@ -75,6 +75,15 @@ def test_register_face_sends_bounded_multipart_image() -> None:
     assert jpeg in request.data
 
 
+def test_register_face_uses_frigates_normalized_folder_name() -> None:
+    jpeg = b"\xff\xd8\xffpixels"
+    opener = FakeOpener([b'{"success":true,"message":"ok"}'])
+
+    client(opener).register_face("A B", jpeg)
+
+    assert opener.requests[0].full_url == "http://frigate:5000/api/faces/A_B/register"
+
+
 def test_delete_faces_serializes_only_valid_explicit_ids() -> None:
     opener = FakeOpener([b'{"success":true}'])
 
@@ -85,6 +94,14 @@ def test_delete_faces_serializes_only_valid_explicit_ids() -> None:
     assert request.full_url == "http://frigate:5000/api/faces/Amy/delete"
     assert json.loads(request.data) == {"ids": ["a.jpg", "b.webp"]}
     assert request.headers["Content-type"] == "application/json"
+
+
+def test_delete_faces_uses_frigates_normalized_folder_name() -> None:
+    opener = FakeOpener([b'{"success":true}'])
+
+    client(opener).delete_faces("A B", ["a.jpg"])
+
+    assert opener.requests[0].full_url == "http://frigate:5000/api/faces/A_B/delete"
 
 
 def test_recognize_uses_the_same_fixed_multipart_contract() -> None:

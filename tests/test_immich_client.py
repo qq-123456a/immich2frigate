@@ -92,6 +92,16 @@ def test_duplicate_person_names_fail_closed_case_insensitively():
         make_client(api).people()
 
 
+def test_person_names_that_normalize_to_same_frigate_label_fail_closed():
+    api = FakeApi()
+    api.person_rows = [
+        {"id": PERSON, "name": "Synthetic Person"},
+        {"id": "00000000-0000-4000-8000-000000000004", "name": "Synthetic_Person"},
+    ]
+    with pytest.raises(ValueError, match="collide"):
+        make_client(api).people()
+
+
 def test_candidates_keeps_valid_minimal_face_metadata_and_preview_is_memory_only():
     api = FakeApi()
     api.asset_rows = [{
