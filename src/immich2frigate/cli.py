@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 
 from .enrollment import (
-    TARGET_FACES_PER_PERSON,
     apply_rebuild_plan,
     backup_registered_library,
     build_rebuild_plan,
@@ -17,6 +16,7 @@ from .frigate_write import FrigateWriteClient
 from .identity_registry import PersonIdentityRegistry
 from .immich_client import ImmichReadOnlyClient
 from .immich_vectors import ImmichVectorStore
+from .selection import FOUNDATION_COUNT, MAX_TRAINING_COUNT
 from .settings import FrigateSettings, ImmichDatabaseSettings, ImmichSettings
 
 
@@ -52,8 +52,7 @@ def _rebuild(args) -> int:
         frigate = FrigateWriteClient(frigate_settings)
         target = frigate.verify_target()
 
-        # The entire 30-per-person source plan must exist before anything is
-        # deleted from Frigate.
+        # Build the full adaptive plan for every person before deleting anything.
         plan = build_rebuild_plan(immich, vectors)
 
         backup_path = Path(args.backup_dir)
@@ -71,7 +70,10 @@ def _rebuild(args) -> int:
         "version": target.version,
         "model_size": target.model_size,
         "people": result.people,
-        "target_per_person": TARGET_FACES_PER_PERSON,
+        "foundation_count": FOUNDATION_COUNT,
+        "maximum_allowed_per_person": MAX_TRAINING_COUNT,
+        "minimum_registered_per_person": result.minimum_per_person,
+        "maximum_registered_per_person": result.maximum_per_person,
         "registered_images": result.registered_images,
         "deleted_registered_images": deleted,
         "backup_face_names": len(manifest["faces"]),

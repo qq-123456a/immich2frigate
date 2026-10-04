@@ -1,10 +1,4 @@
-"""Representative sampling from Immich's own vector spaces.
-
-The primary selector deliberately does not classify pose, lighting, expression,
-scene type, or invent an identity/quality confidence score. Immich has already
-assigned each face to a person and already computed both face and smart-search
-embeddings. This module only asks which small subset best covers those vectors.
-"""
+"""Representative sampling from Immich's own vector spaces."""
 
 from __future__ import annotations
 
@@ -14,78 +8,116 @@ import numpy as np
 
 from .immich_client import FaceCandidate, PersonRecord
 
+FOUNDATION_COUNT = 5
+MAX_TRAINING_COUNT = 30
+DEFAULT_NOVELTY_DISTANCE = 0.08
+
 
 @dataclass(frozen=True, slots=True)
 class VectorFace:
-    """One Immich face with the two vectors used for coverage selection."""
+    """One Immich face with the two vectors used for representative sampling."""
 
     source: FaceCandidate = field(repr=False)
     face_embedding: np.ndarray = field(repr=False)
     scene_embedding: np.ndarray = field(repr=False)
 
 
-def select_representative_faces(
+def select_adaptive_faces(
     person: PersonRecord,
-    candidates: list[VectorFace],
+    foundation_candidates: list[VectorFace],
+    expansion_candidates: list[VectorFace],
     *,
-    count: int = 30,
+    foundation_count: int = FOUNDATION_COUNT,
+    max_count: int = MAX_TRAINING_COUNT,
+    novelty_distance: float = DEFAULT_NOVELTY_DISTANCE,
 ) -> list[VectorFace]:
-    """Return up to count faces that maximize face+scene coverage.
+    """Select a strong foundation, then add only meaningfully novel samples.
 
-    Face and scene vectors are L2-normalized independently and concatenated,
-    giving both Immich vector spaces equal influence without assigning semantic
-    labels. Selection then uses a deterministic greedy facility-location
-    objective: each chosen image should improve coverage of the whole
-    candidate population, which avoids preferentially selecting isolated
-    outliers merely because they are unusual.
-
-    The order is meaningful: earlier entries add more marginal coverage and
-    should be attempted first when Frigate rejects some registration images.
+    Foundation candidates are expected to have passed the stricter image-quality
+    gate. The first five are chosen by centrality in Immich's face-vector space,
+    a conservative proxy for typical identity views. Expansion can use a wider
+    quality-approved pool, but a candidate is added only when its combined face
+    and scene vector is sufficiently different from every image already chosen.
     """
 
-    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-        raise ValueError("count must be a positive integer")
-    if not candidates:
-        return []
+    if isinstance(foundation_count, bool) or not isinstance(foundation_count, int) or foundation_count < 1:
+        raise ValueError("foundation_count must be a positive integer")
+    if isinstance(max_count, bool) or not isinstance(max_count, int) or max_count < foundation_count:
+        raise ValueError("max_count must be at least foundation_count")
+    if (
+        isinstance(novelty_distance, bool)
+        or not isinstance(novelty_distance, (int, float))
+        or not np.isfinite(novelty_distance)
+        or not 0 < novelty_distance < 2
+    ):
+        raise ValueError("novelty_distance must be between 0 and 2")
 
-    ordered = sorted(candidates, key=_candidate_key)
-    face_vectors = _validated_matrix(person, ordered, attr="face_embedding")
-    scene_vectors = _validated_matrix(person, ordered, attr="scene_embedding")
+    if len(foundation_candidates) < foundation_count:
+        raise ValueError(
+            f"at least {foundation_count} foundation-quality faces are required"
+        )
 
-    # Normalize each space separately. Concatenating two unit vectors and then
-    # scaling by sqrt(2) makes combined cosine similarity the arithmetic mean
-    # of Immich's face-space and scene-space cosine similarities.
-    face_unit = _row_normalize(face_vectors)
-    scene_unit = _row_normalize(scene_vectors)
-    combined = np.concatenate((face_unit, scene_unit), axis=1)
+    expansion_by_face = {
+        item.source.face_id: item for item in expansion_candidates if item.source.face_id is not None
+    }
+    for item in foundation_candidates:
+        if item.source.face_id is None or item.source.face_id not in expansion_by_face:
+            raise ValueError("foundation candidates must be included in expansion candidates")
+
+    expansion = sorted(expansion_candidates, key=_candidate_key)
+    foundation = sorted(foundation_candidates, key=_candidate_key)
+    expansion_face = _validated_matrix(person, expansion, attr="face_embedding")
+    expansion_scene = _validated_matrix(person, expansion, attr="scene_embedding")
+    foundation_face = _validated_matrix(person, foundation, attr="face_embedding")
+
+    expansion_face_unit = _row_normalize(expansion_face)
+    expansion_scene_unit = _row_normalize(expansion_scene)
+    foundation_face_unit = _row_normalize(foundation_face)
+
+    centroid = np.mean(foundation_face_unit, axis=0)
+    centroid_norm = float(np.linalg.norm(centroid))
+    if not np.isfinite(centroid_norm) or centroid_norm == 0:
+        centrality = np.zeros(len(foundation), dtype=np.float32)
+    else:
+        centroid = centroid / centroid_norm
+        centrality = foundation_face_unit @ centroid
+
+    foundation_indices = sorted(
+        range(len(foundation)),
+        key=lambda i: (-float(centrality[i]), _candidate_key(foundation[i])),
+    )[:foundation_count]
+    selected_faces = [foundation[index].source.face_id for index in foundation_indices]
+
+    index_by_face = {item.source.face_id: index for index, item in enumerate(expansion)}
+    selected = [index_by_face[face_id] for face_id in selected_faces]
+    selected_set = set(selected)
+
+    combined = np.concatenate((expansion_face_unit, expansion_scene_unit), axis=1)
     combined *= np.float32(1.0 / np.sqrt(2.0))
 
-    similarity = combined @ combined.T
-    # Facility-location coverage is easier to reason about on [0, 1]. This is
-    # a monotonic transform of cosine similarity and is not a confidence score.
-    similarity = np.clip((similarity + np.float32(1.0)) * np.float32(0.5), 0.0, 1.0)
+    while len(selected) < min(max_count, len(expansion)):
+        selected_matrix = combined[selected]
+        best_index: int | None = None
+        best_distance = -1.0
 
-    limit = min(count, len(ordered))
-    coverage = np.zeros(len(ordered), dtype=np.float32)
-    selected: list[int] = []
-    available = np.ones(len(ordered), dtype=bool)
+        for index in range(len(expansion)):
+            if index in selected_set:
+                continue
+            nearest_similarity = float(np.max(selected_matrix @ combined[index]))
+            distance = 1.0 - nearest_similarity
+            if distance > best_distance + 1e-12:
+                best_index = index
+                best_distance = distance
+            elif abs(distance - best_distance) <= 1e-12 and best_index is not None:
+                if _candidate_key(expansion[index]) < _candidate_key(expansion[best_index]):
+                    best_index = index
 
-    for _ in range(limit):
-        gains = np.full(len(ordered), -np.inf, dtype=np.float64)
-        for index in np.flatnonzero(available):
-            improved = np.maximum(coverage, similarity[:, index])
-            gains[index] = float(np.sum(improved - coverage, dtype=np.float64))
+        if best_index is None or best_distance < novelty_distance:
+            break
+        selected.append(best_index)
+        selected_set.add(best_index)
 
-        # np.argmax is deterministic and ordered is deterministically sorted,
-        # so exact ties have a stable result.
-        best = int(np.argmax(gains))
-        if not np.isfinite(gains[best]):
-            raise ValueError("representative selection could not make progress")
-        selected.append(best)
-        coverage = np.maximum(coverage, similarity[:, best])
-        available[best] = False
-
-    return [ordered[index] for index in selected]
+    return [expansion[index] for index in selected]
 
 
 def _candidate_key(item: VectorFace) -> tuple[str, str, str]:

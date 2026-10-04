@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from immich2frigate.immich_client import FaceCandidate, PersonRecord
-from immich2frigate.selection import VectorFace, select_representative_faces
+from immich2frigate.selection import VectorFace, select_adaptive_faces
 
 PERSON = "00000000-0000-4000-8000-000000000001"
 
@@ -14,10 +14,10 @@ def vector_face(index: int, face, scene) -> VectorFace:
         person_id=PERSON,
         face_id=f"00000000-0000-4000-8000-{index:012d}",
         asset_id=f"10000000-0000-4000-8000-{index:012d}",
-        taken_at=f"2025-01-{index:02d}T00:00:00Z",
+        taken_at=f"2025-01-{(index % 28) + 1:02d}T00:00:00Z",
         checksum=f"checksum-{index}",
-        box=(0.0, 0.0, 10.0, 10.0),
-        frame=(10, 10),
+        box=(0.0, 0.0, 100.0, 100.0),
+        frame=(100, 100),
     )
     return VectorFace(
         source=source,
@@ -26,79 +26,65 @@ def vector_face(index: int, face, scene) -> VectorFace:
     )
 
 
-def test_selector_returns_requested_count_and_is_deterministic():
+def test_same_distribution_stops_at_five_foundation_faces():
     person = PersonRecord(PERSON, "Synthetic Person")
     candidates = [
-        vector_face(1, [1.0, 0.0], [1.0, 0.0]),
-        vector_face(2, [0.9, 0.1], [1.0, 0.0]),
-        vector_face(3, [0.0, 1.0], [0.0, 1.0]),
-        vector_face(4, [-1.0, 0.0], [0.0, -1.0]),
+        vector_face(i, [1.0, i * 0.001], [1.0, i * 0.001])
+        for i in range(1, 11)
     ]
 
-    first = select_representative_faces(person, list(reversed(candidates)), count=3)
-    second = select_representative_faces(person, candidates, count=3)
+    result = select_adaptive_faces(person, candidates[:7], candidates, novelty_distance=0.08)
 
-    assert [item.source.face_id for item in first] == [item.source.face_id for item in second]
-    assert len(first) == 3
-    assert len({item.source.face_id for item in first}) == 3
+    assert len(result) == 5
+    assert len({item.source.face_id for item in result}) == 5
 
 
-def test_selector_caps_at_available_candidates():
+def test_diverse_distribution_expands_beyond_foundation_without_exceeding_cap():
     person = PersonRecord(PERSON, "Synthetic Person")
-    candidates = [
-        vector_face(1, [1.0, 0.0], [1.0, 0.0]),
-        vector_face(2, [0.0, 1.0], [0.0, 1.0]),
+    foundation = [
+        vector_face(i, [1.0, i * 0.001], [1.0, i * 0.001])
+        for i in range(1, 6)
+    ]
+    expansion = foundation + [
+        vector_face(6, [0.0, 1.0], [1.0, 0.0]),
+        vector_face(7, [-1.0, 0.0], [0.0, 1.0]),
+        vector_face(8, [0.0, -1.0], [-1.0, 0.0]),
     ]
 
-    assert len(select_representative_faces(person, candidates, count=30)) == 2
+    result = select_adaptive_faces(person, foundation, expansion, max_count=7)
+
+    assert len(result) == 7
+    assert len({item.source.face_id for item in result}) == 7
 
 
-def test_selector_rejects_invalid_count_and_vectors():
+def test_selector_requires_five_foundation_quality_faces():
     person = PersonRecord(PERSON, "Synthetic Person")
-    valid = vector_face(1, [1.0, 0.0], [1.0, 0.0])
+    candidates = [vector_face(i, [1.0, i * 0.01], [1.0, 0.0]) for i in range(1, 5)]
 
-    with pytest.raises(ValueError, match="positive"):
-        select_representative_faces(person, [valid], count=0)
+    with pytest.raises(ValueError, match="at least 5"):
+        select_adaptive_faces(person, candidates, candidates)
 
-    bad = vector_face(2, [0.0, 0.0], [1.0, 0.0])
+
+def test_selector_rejects_invalid_vectors_and_duplicate_assets():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    valid = [vector_face(i, [1.0, i], [1.0, i]) for i in range(1, 6)]
+    bad = vector_face(6, [0.0, 0.0], [1.0, 0.0])
     with pytest.raises(ValueError, match="non-zero"):
-        select_representative_faces(person, [bad])
+        select_adaptive_faces(person, valid, valid + [bad])
 
-    mismatch = vector_face(3, [1.0, 0.0, 0.0], [1.0, 0.0])
-    with pytest.raises(ValueError, match="same dimension"):
-        select_representative_faces(person, [valid, mismatch])
-
-
-def test_selector_rejects_duplicate_assets_and_wrong_person():
-    person = PersonRecord(PERSON, "Synthetic Person")
-    one = vector_face(1, [1.0, 0.0], [1.0, 0.0])
-    two = vector_face(2, [0.0, 1.0], [0.0, 1.0])
-    duplicate_asset_source = FaceCandidate(
+    duplicate_source = FaceCandidate(
         person_id=PERSON,
-        face_id=two.source.face_id,
-        asset_id=one.source.asset_id,
-        taken_at=two.source.taken_at,
-        checksum=two.source.checksum,
-        box=two.source.box,
-        frame=two.source.frame,
+        face_id="00000000-0000-4000-8000-000000000099",
+        asset_id=valid[0].source.asset_id,
+        taken_at="2025-02-01T00:00:00Z",
+        checksum="duplicate",
+        box=(0.0, 0.0, 100.0, 100.0),
+        frame=(100, 100),
     )
-    duplicate_asset = VectorFace(
-        duplicate_asset_source,
-        two.face_embedding,
-        two.scene_embedding,
+    duplicate = VectorFace(
+        duplicate_source,
+        np.array([0.0, 1.0], np.float32),
+        np.array([0.0, 1.0], np.float32),
     )
     with pytest.raises(ValueError, match="one asset"):
-        select_representative_faces(person, [one, duplicate_asset])
-
-    wrong_source = FaceCandidate(
-        person_id="00000000-0000-4000-8000-000000000099",
-        face_id="00000000-0000-4000-8000-000000000098",
-        asset_id="10000000-0000-4000-8000-000000000098",
-        taken_at="2025-02-01T00:00:00Z",
-        checksum="wrong",
-        box=(0.0, 0.0, 10.0, 10.0),
-        frame=(10, 10),
-    )
-    wrong = VectorFace(wrong_source, np.ones(2, np.float32), np.ones(2, np.float32))
-    with pytest.raises(ValueError, match="different Immich person"):
-        select_representative_faces(person, [wrong])
+        select_adaptive_faces(person, valid, valid + [duplicate])

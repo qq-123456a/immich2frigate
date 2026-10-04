@@ -11,11 +11,14 @@ from .frigate_names import frigate_face_name
 from .identity_registry import PersonIdentityRegistry
 from .immich_client import ImmichReadOnlyClient, PersonRecord
 from .immich_vectors import ImmichVectorStore
-from .selection import VectorFace, select_representative_faces
+from .selection import (
+    FOUNDATION_COUNT,
+    MAX_TRAINING_COUNT,
+    VectorFace,
+    select_adaptive_faces,
+)
+from .training_quality import assess_training_crop
 from .upload_image import prepare_candidate_upload
-
-TARGET_FACES_PER_PERSON = 30
-DEFAULT_SELECTION_POOL = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,57 +26,82 @@ class PersonTrainingPlan:
     person: PersonRecord = field(repr=False)
     candidates: tuple[VectorFace, ...] = field(repr=False)
 
+    @property
+    def target_count(self) -> int:
+        return len(self.candidates)
+
 
 @dataclass(frozen=True, slots=True)
 class RebuildPlan:
     people: tuple[PersonTrainingPlan, ...]
-    target_per_person: int = TARGET_FACES_PER_PERSON
 
     @property
     def total_images(self) -> int:
-        return len(self.people) * self.target_per_person
+        return sum(person.target_count for person in self.people)
 
 
 @dataclass(frozen=True, slots=True)
 class RebuildResult:
     people: int
     registered_images: int
-    target_per_person: int
+    minimum_per_person: int
+    maximum_per_person: int
 
 
 def build_rebuild_plan(
     immich: ImmichReadOnlyClient,
     vectors: ImmichVectorStore,
     *,
-    target_per_person: int = TARGET_FACES_PER_PERSON,
-    selection_pool: int = DEFAULT_SELECTION_POOL,
+    foundation_count: int = FOUNDATION_COUNT,
+    max_count: int = MAX_TRAINING_COUNT,
 ) -> RebuildPlan:
-    """Preflight every named Immich person before any Frigate deletion occurs."""
+    """Build every person's adaptive plan before any Frigate deletion occurs.
 
-    if target_per_person < 1:
-        raise ValueError("target_per_person must be positive")
-    if selection_pool < target_per_person:
-        raise ValueError("selection_pool must be at least target_per_person")
+    The destructive reset is allowed only when every named person has at least
+    foundation_count high-quality foundation images. Extra images are optional
+    and selected only when their Immich face and scene vectors add useful coverage.
+    """
 
     plans: list[PersonTrainingPlan] = []
     for person in immich.people():
         raw = immich.candidates(person.person_id)
         embedded = vectors.vectors_for_person(person, raw)
-        if len(embedded) < target_per_person:
+
+        foundation: list[VectorFace] = []
+        expansion: list[VectorFace] = []
+        for candidate in embedded:
+            try:
+                preview = immich.preview(candidate.source.asset_id)
+                upload = prepare_candidate_upload(candidate.source, preview)
+                quality = assess_training_crop(candidate.source, upload.crop_bgr)
+            except ValueError:
+                continue
+            if quality.training_eligible:
+                expansion.append(candidate)
+            if quality.foundation_eligible:
+                foundation.append(candidate)
+
+        if len(foundation) < foundation_count:
             raise ValueError(
-                f"Immich person {person.name!r} has only {len(embedded)} usable vector-backed faces; "
-                f"{target_per_person} are required before a destructive rebuild"
+                f"Immich person {person.name!r} has only {len(foundation)} "
+                f"foundation-quality faces; {foundation_count} are required before "
+                "a destructive rebuild"
             )
-        ordered = select_representative_faces(
+
+        selected = select_adaptive_faces(
             person,
-            embedded,
-            count=min(selection_pool, len(embedded)),
+            foundation,
+            expansion,
+            foundation_count=foundation_count,
+            max_count=max_count,
         )
-        plans.append(PersonTrainingPlan(person=person, candidates=tuple(ordered)))
+        if len(selected) < foundation_count:
+            raise RuntimeError("adaptive selection returned too few foundation faces")
+        plans.append(PersonTrainingPlan(person=person, candidates=tuple(selected)))
 
     if not plans:
         raise ValueError("Immich returned no named people")
-    return RebuildPlan(tuple(plans), target_per_person)
+    return RebuildPlan(tuple(plans))
 
 
 def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, object]:
@@ -129,46 +157,42 @@ def apply_rebuild_plan(
     *,
     registry: PersonIdentityRegistry | None = None,
 ) -> RebuildResult:
-    """Register exactly target_per_person successful images per planned person."""
+    """Register each person's adaptive candidate count exactly."""
 
     registered_total = 0
+    per_person_counts: list[int] = []
+
     for person_plan in plan.people:
         name = frigate_face_name(person_plan.person.name)
         frigate.create_face(name)
         successful = 0
 
         for candidate in person_plan.candidates:
-            if successful >= plan.target_per_person:
-                break
             preview = immich.preview(candidate.source.asset_id)
-            try:
-                upload = prepare_candidate_upload(candidate.source, preview)
-            except ValueError:
-                # A local crop/encoding rejection is known before any remote
-                # mutation, so it is safe to use the next representative.
-                continue
+            upload = prepare_candidate_upload(candidate.source, preview)
 
-            # From this point onward, fail closed. A transport error can be
-            # ambiguous: Frigate may have accepted the image even if the
-            # response was lost, so never auto-retry with another candidate.
             response = frigate.register_face(name, upload.encoded)
             if response.get("success") is not True:
                 raise RuntimeError("Frigate did not confirm face registration")
             successful += 1
 
         current = frigate.inventory().get(name, ())
-        if successful != plan.target_per_person or len(current) != plan.target_per_person:
+        if successful != person_plan.target_count or len(current) != person_plan.target_count:
             raise RuntimeError(
-                f"Frigate registered {len(current)} images for {name}, expected {plan.target_per_person}"
+                f"Frigate registered {len(current)} images for {name}, "
+                f"expected {person_plan.target_count}"
             )
         if registry is not None:
             registry.bind(person_plan.person.person_id, name)
+
         registered_total += successful
+        per_person_counts.append(successful)
 
     return RebuildResult(
         people=len(plan.people),
         registered_images=registered_total,
-        target_per_person=plan.target_per_person,
+        minimum_per_person=min(per_person_counts),
+        maximum_per_person=max(per_person_counts),
     )
 
 
