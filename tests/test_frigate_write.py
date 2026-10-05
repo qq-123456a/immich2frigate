@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from io import BytesIO
+from urllib.error import HTTPError
 
 import pytest
 
@@ -82,6 +83,24 @@ def test_register_face_uses_frigates_normalized_folder_name() -> None:
     client(opener).register_face("A B", jpeg)
 
     assert opener.requests[0].full_url == "http://frigate:5000/api/faces/A_B/register"
+
+
+def test_http_error_keeps_only_bounded_api_message_for_classification() -> None:
+    error = HTTPError(
+        "http://frigate:5000/api/faces/Amy/register",
+        400,
+        "Bad Request",
+        {},
+        BytesIO(b'{"detail":"No face was detected."}'),
+    )
+    opener = FakeOpener([error])
+
+    with pytest.raises(FrigateApiError) as caught:
+        client(opener).register_face("Amy", b"\xff\xd8\xffpixels")
+
+    assert caught.value.status_code == 400
+    assert caught.value.api_message == "No face was detected."
+    assert str(caught.value) == "Frigate returned HTTP 400"
 
 
 def test_delete_faces_serializes_only_valid_explicit_ids() -> None:

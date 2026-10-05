@@ -19,6 +19,17 @@ _FACE_EXTENSIONS = (".webp", ".png", ".jpg", ".jpeg")
 class FrigateApiError(RuntimeError):
     """A bounded, non-sensitive Frigate API failure."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        api_message: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.api_message = api_message
+
 
 @dataclass(frozen=True, slots=True)
 class FrigateTarget:

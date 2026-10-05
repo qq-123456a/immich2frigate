@@ -17,6 +17,7 @@ from .enrollment import (
     build_rebuild_plan,
     reset_registered_library,
 )
+from .frigate_client import FrigateApiError
 from .frigate_write import FrigateWriteClient
 from .identity_registry import PersonIdentityRegistry
 from .immich_client import ImmichReadOnlyClient
@@ -256,7 +257,17 @@ def _sync_once(args) -> None:
                 state.save()
                 if not before:
                     frigate.create_face(name)
-                response = frigate.register_face(name, image)
+                try:
+                    response = frigate.register_face(name, image)
+                except FrigateApiError as error:
+                    if error.status_code == 400 and error.api_message == "No face was detected.":
+                        source["examined_face_ids"] = sorted(
+                            set(source.get("examined_face_ids", [])) | {face_id}
+                        )
+                        state.pending = None
+                        state.save()
+                        continue
+                    raise
                 if response.get("success") is not True:
                     source["examined_face_ids"] = sorted(
                         set(source.get("examined_face_ids", [])) | {face_id}

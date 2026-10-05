@@ -195,7 +195,7 @@ class FrigateWriteClient(FrigateReadOnlyClient):
         except ValueError:
             raise FrigateApiError("Frigate returned an invalid response URL") from None
         except HTTPError as error:
-            raise FrigateApiError(f"Frigate returned HTTP {error.code}") from None
+            raise _http_error(error) from None
         except (URLError, TimeoutError, OSError) as error:
             # Keep the failure surface non-sensitive; never include a request
             # URL, body, or server response in this message.
@@ -230,7 +230,7 @@ class FrigateWriteClient(FrigateReadOnlyClient):
         except ValueError:
             raise FrigateApiError("Frigate returned an invalid response URL") from None
         except HTTPError as error:
-            raise FrigateApiError(f"Frigate returned HTTP {error.code}") from None
+            raise _http_error(error) from None
         except (URLError, TimeoutError, OSError) as error:
             raise FrigateApiError(
                 f"Frigate request failed ({type(error).__name__})"
@@ -307,6 +307,27 @@ def _multipart_body(
     if len(body) > _MAX_UPLOAD_BYTES + 2048:
         raise ValueError("multipart image upload exceeded the size limit")
     return body, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+
+def _http_error(error: HTTPError) -> FrigateApiError:
+    """Retain only a bounded API message for precise safe error handling."""
+
+    body = error.read(_MAX_RESPONSE_BYTES + 1)
+    api_message = None
+    if len(body) <= _MAX_RESPONSE_BYTES:
+        try:
+            value = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            value = None
+        if isinstance(value, dict):
+            message = value.get("message", value.get("detail"))
+            if isinstance(message, str):
+                api_message = message
+    return FrigateApiError(
+        f"Frigate returned HTTP {error.code}",
+        status_code=error.code,
+        api_message=api_message,
+    )
 
 
 def _json_object(body: bytes, label: str) -> dict[str, object]:

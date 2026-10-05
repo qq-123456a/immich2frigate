@@ -106,6 +106,21 @@ def test_incremental_plan_returns_examined_ids_after_preparation():
     assert set(known) <= set(examined)
 
 
+def test_incremental_plan_keeps_one_largest_face_per_asset():
+    immich = FakeImmich(12)
+    duplicate = immich.items[6]
+    immich.items[6] = replace(duplicate, asset_id=immich.items[5].asset_id)
+    known = [item.face_id for item in immich.items[:5]]
+
+    plan, examined = build_incremental_plan(
+        immich, FakeVectors(diverse=True), immich.person, known, known
+    )
+
+    selected_assets = [item.source.asset_id for item in plan.candidates]
+    assert len(selected_assets) == len(set(selected_assets))
+    assert duplicate.face_id in examined
+
+
 def test_apply_uses_preflighted_uploads_without_refetching_immich(tmp_path):
     immich = FakeImmich(5)
     plan = build_rebuild_plan(immich, FakeVectors())

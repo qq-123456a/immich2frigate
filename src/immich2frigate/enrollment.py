@@ -176,6 +176,10 @@ def build_incremental_plan(
         item for item in embedded
         if item.source.face_id not in known_ids and item.source.face_id not in examined_ids
     ]
+    known_assets = {item.source.asset_id for item in known}
+    new_candidates, duplicate_face_ids = _one_face_per_asset(
+        new_candidates, excluded_assets=known_assets
+    )
     proposed = select_adaptive_faces(
         person,
         known,
@@ -185,7 +189,7 @@ def build_incremental_plan(
     )
     proposed_ids = {item.source.face_id for item in proposed}
     eligible: list[VectorFace] = []
-    reviewed: set[str] = set()
+    reviewed: set[str] = set(duplicate_face_ids)
     prepared = {}
     for candidate in new_candidates:
         face_id = candidate.source.face_id
@@ -225,6 +229,47 @@ def build_incremental_plan(
         examined_face_ids=newly_examined,
     )
     return plan, newly_examined
+
+
+def _one_face_per_asset(
+    candidates: Sequence[VectorFace], *, excluded_assets: set[str]
+) -> tuple[list[VectorFace], set[str]]:
+    """Keep the largest detected face per source image for Frigate uploads."""
+
+    best_by_asset: dict[str, VectorFace] = {}
+    discarded: set[str] = set()
+    for candidate in candidates:
+        face_id = candidate.source.face_id
+        asset_id = candidate.source.asset_id
+        if face_id is None:
+            continue
+        if asset_id in excluded_assets:
+            discarded.add(face_id)
+            continue
+        previous = best_by_asset.get(asset_id)
+        if previous is None:
+            best_by_asset[asset_id] = candidate
+            continue
+        if _normalized_face_area(candidate) > _normalized_face_area(previous):
+            discarded.add(previous.source.face_id)
+            best_by_asset[asset_id] = candidate
+        else:
+            discarded.add(face_id)
+    unique = sorted(
+        best_by_asset.values(),
+        key=lambda item: (
+            item.source.taken_at,
+            item.source.asset_id,
+            item.source.face_id or "",
+        ),
+    )
+    return unique, discarded
+
+
+def _normalized_face_area(candidate: VectorFace) -> float:
+    x1, y1, x2, y2 = candidate.source.box
+    width, height = candidate.source.frame
+    return ((x2 - x1) * (y2 - y1)) / (width * height)
 
 
 def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, object]:
