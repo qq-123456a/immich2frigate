@@ -15,7 +15,6 @@ MIN_FOUNDATION_SHARPNESS = 250.0
 MIN_COLOR_SPREAD = 3.0
 MIN_MEAN_LUMA = 30.0
 MAX_MEAN_LUMA = 225.0
-MIN_FOUNDATION_CONTEXT_RETENTION = 0.25
 _CONTEXT_RATIO = 0.5
 
 
@@ -42,9 +41,9 @@ def assess_training_crop(
     This deliberately does not run a pose, expression, scene, or identity model.
     Sharpness uses the same Laplacian variance metric Frigate uses for its blur
     confidence filter. The remaining checks reject very small, effectively
-    grayscale, or strongly under/over-exposed crops. Foundation images also need
-    enough room around the Immich face box that the configured upload context is
-    not almost entirely clipped by the source frame.
+    grayscale, or strongly under/over-exposed crops. Face-area ratio and context
+    retention are returned as diagnostics rather than hard gates so close crops
+    are not discarded solely because of framing.
     """
 
     image = _require_bgr(crop_bgr)
@@ -76,11 +75,7 @@ def assess_training_crop(
         and MIN_MEAN_LUMA <= mean_luma <= MAX_MEAN_LUMA
     )
     training_eligible = common and sharpness >= MIN_TRAINING_SHARPNESS
-    foundation_eligible = (
-        common
-        and sharpness >= MIN_FOUNDATION_SHARPNESS
-        and context_retention >= MIN_FOUNDATION_CONTEXT_RETENTION
-    )
+    foundation_eligible = common and sharpness >= MIN_FOUNDATION_SHARPNESS
 
     return TrainingQuality(
         training_eligible=training_eligible,

@@ -6,7 +6,7 @@ Build a compact Frigate face-training library from faces that Immich has already
 
 Immich is the teacher. Frigate is the student. The project does not add its own pose, expression, scene-label, or identity-confidence model.
 
-The first goal is a small, strong foundation rather than a fixed image quota. Each named person must have at least five foundation-quality images before a destructive rebuild is allowed. Foundation candidates must be clear, color, reasonably exposed, large enough to be useful, and have enough crop context to avoid a tightly clipped seed image.
+The first goal is a small, strong foundation rather than a fixed image quota. Each named person must have at least five foundation-quality images before a destructive rebuild is allowed. Foundation candidates must be clear, color, reasonably exposed, large enough to be useful.
 
 The selector uses Immich's persisted face embeddings to build a conservative identity core before rewarding diversity. Isolated or clearly off-cluster faces are excluded from automatic training selection. Within that safe core, the first five prefer medoid-central, locally dense faces while avoiding near-duplicate foundation images when alternatives exist.
 

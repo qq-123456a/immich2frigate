@@ -11,7 +11,7 @@
 ## 2. Foundation-first selection
 
 - Require at least 5 foundation-quality images per named person before destructive reset.
-- Apply Frigate-aligned non-ML quality gates: clear enough by Laplacian sharpness, color rather than effectively grayscale, reasonable exposure, sufficient face area, and enough surrounding crop context for a stable seed image.
+- Apply Frigate-aligned non-ML quality gates: clear enough by Laplacian sharpness, color rather than effectively grayscale, reasonable exposure, and sufficient face area. Face-area ratio and surrounding crop context are recorded as diagnostics rather than hard rejection rules.
 - Build a conservative identity-safe pool from Immich's persisted face embeddings before rewarding novelty. Use a robust medoid envelope and nearest-neighbor isolation check only to reject clear intra-person outliers; do not claim this is a second identity classifier.
 - Among safe foundation-quality candidates, prefer medoid-central and locally dense faces.
 - Avoid near-duplicate foundation faces when safe alternatives exist, but keep the five-image minimum by falling back to the most central safe candidates when the source library is genuinely repetitive.

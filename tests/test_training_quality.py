@@ -53,12 +53,12 @@ def test_grayscale_or_small_face_is_rejected():
     assert small_quality.training_eligible is False
 
 
-def test_edge_clipped_face_can_expand_but_not_seed_foundation():
+def test_edge_clipped_face_reports_context_without_becoming_a_hard_rejection():
     quality = assess_training_crop(
         candidate(box=(0.0, 25.0, 50.0, 75.0)),
         clear_color_image(),
     )
 
     assert quality.training_eligible is True
-    assert quality.foundation_eligible is False
+    assert quality.foundation_eligible is True
     assert quality.context_retention == 0.0
