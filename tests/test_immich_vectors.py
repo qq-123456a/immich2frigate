@@ -119,3 +119,27 @@ def test_vector_store_accepts_postgres_array_vector_text(monkeypatch):
     result = store.vectors_for_person(PersonRecord(PERSON, "Amy"), [candidate()])
 
     assert np.allclose(result[0].face_embedding, [1, 0, 0])
+
+
+def test_candidate_query_includes_bounded_recent_faces_and_locked_ids(monkeypatch):
+    cursor, _ = install_psycopg(
+        monkeypatch,
+        [
+            (
+                FACE, ASSET, "2025-01-01T00:00:00Z", "ab", 0, 0, 10, 10,
+                10, 10, "[1,0,0]", None,
+            )
+        ],
+    )
+    store = ImmichVectorStore("postgresql://reader:placeholder@immich-db/immich")
+
+    result = store.candidates_for_person(
+        PersonRecord(PERSON, "Amy"), include_face_ids=(FACE,)
+    )
+
+    query, params = cursor.executed
+    assert len(result) == 1
+    assert "FROM recent" in query
+    assert params[0] == PERSON
+    assert params[3] == 200
+    assert params[4] == [FACE]

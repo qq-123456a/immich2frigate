@@ -26,9 +26,9 @@
 - Cap the initial import at 30 images per person.
 - A person with many near-duplicate photos may therefore receive only 5-7 initial training images.
 
-## 4. Destructive rebuild gate
+## 4. First-phase rebuild gate
 
-Before deleting any registered Frigate face data, build the complete adaptive plan for all named people, verify every person has five safe foundation-quality images, verify Frigate 0.18.0/large/admin, and back up the registered library.
+Before deleting any registered Frigate face data, rank named Immich people by distinct image count, lock the top three, and build the complete adaptive plan for those three. Verify each has five safe foundation-quality images, verify Frigate 0.18.0/large/admin, and back up all registered files. Keep the three-person roster stable for incremental sync; do not rerank during normal runs.
 
 After the gate passes, delete registered faces from a fresh inventory, verify the library is empty, upload sequentially, stop immediately on ambiguous remote writes, and verify each person's exact adaptive target count.
 

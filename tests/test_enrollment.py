@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import numpy as np
 import pytest
 
 from immich2frigate.enrollment import (
     apply_rebuild_plan,
     backup_registered_library,
+    build_incremental_plan,
     build_rebuild_plan,
+    RebuildPlan,
     reset_registered_library,
 )
 from immich2frigate.identity_registry import PersonIdentityRegistry
@@ -45,8 +48,9 @@ class FakeImmich:
     def people(self):
         return [self.person]
 
-    def candidates(self, person_id):
+    def candidates(self, person_id, years=100):
         assert person_id == PERSON
+        assert 1 <= years <= 100
         return self.items
 
     def preview(self, asset_id):
@@ -82,11 +86,24 @@ def test_rebuild_plan_requires_only_five_foundation_quality_faces():
     plan = build_rebuild_plan(FakeImmich(20), FakeVectors())
     assert plan.total_images == 5
     assert plan.people[0].target_count == 5
+    assert len(plan.people[0].examined_face_ids) == 20
 
 
 def test_rebuild_plan_expands_when_distribution_is_genuinely_diverse():
     plan = build_rebuild_plan(FakeImmich(12), FakeVectors(diverse=True))
     assert 5 < plan.people[0].target_count <= 30
+
+
+def test_incremental_plan_returns_examined_ids_after_preparation():
+    immich = FakeImmich(10)
+    known = [item.face_id for item in immich.items[:5]]
+
+    plan, examined = build_incremental_plan(
+        immich, FakeVectors(), immich.person, known, known
+    )
+
+    assert plan.examined_face_ids == examined
+    assert set(known) <= set(examined)
 
 
 def test_apply_uses_preflighted_uploads_without_refetching_immich(tmp_path):
@@ -104,6 +121,21 @@ def test_apply_uses_preflighted_uploads_without_refetching_immich(tmp_path):
 
     assert result.registered_images == 5
     assert registry.binding(PERSON).frigate_name == "Synthetic_Person"
+
+
+def test_apply_rejects_fewer_than_five_faces_before_touching_frigate():
+    plan = build_rebuild_plan(FakeImmich(5), FakeVectors())
+    too_small = replace(
+        plan.people[0],
+        candidates=plan.people[0].candidates[:4],
+        uploads=plan.people[0].uploads[:4],
+    )
+    frigate = FakeFrigate()
+
+    with pytest.raises(ValueError, match="invalid preflighted uploads"):
+        apply_rebuild_plan(RebuildPlan((too_small,)), FakeImmich(5), frigate)
+
+    assert frigate.deleted == []
 
 
 class FakeFrigate:

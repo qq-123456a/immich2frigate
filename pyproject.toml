@@ -19,10 +19,10 @@ compat = [
     "pillow>=12.1.0",
 ]
 curator = [
-    "if-curator @ git+https://github.com/ds-sebastian/if_curator.git@7bf745c18e68282e1257dc4a99e0ea1c93511d44",
+    "requests>=2.32.5",
 ]
 database = ["psycopg[binary]>=3.2"]
-vision = ["opencv-contrib-python-headless>=4.10"]
+vision = ["opencv-contrib-python-headless>=4.10,<5"]
 dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]

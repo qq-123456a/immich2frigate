@@ -148,7 +148,31 @@ def test_invalid_ids_and_years_are_rejected_before_read():
         client.candidates(PERSON, years=0)
     with pytest.raises(ValueError):
         client.preview("not-a-uuid")
-    assert api.photo_calls == []
+
+
+def test_photo_count_counts_unique_images_using_requested_year_window():
+    api = FakeApi()
+    api.asset_rows = [{"id": ASSET}, {"id": ASSET}, {"id": "00000000-0000-4000-8000-000000000004"}]
+    assert make_client(api).photo_count(PERSON, years=100) == 2
+    assert api.photo_calls == [(PERSON, 100)]
+
+
+def test_candidates_sample_large_libraries_across_the_timeline():
+    api = FakeApi()
+    api.asset_rows = [
+        {"id": f"00000000-0000-4000-8000-{index:012d}",
+         "fileCreatedAt": f"{index:04d}-01-01T00:00:00Z", "checksum": str(index)}
+        for index in range(1, 2002)
+    ]
+    api.faces = [{
+        "id": FACE, "boundingBoxX1": 1, "boundingBoxY1": 1,
+        "boundingBoxX2": 8, "boundingBoxY2": 8, "imageWidth": 10,
+        "imageHeight": 10, "personId": PERSON,
+    }]
+    candidates = make_client(api).candidates(PERSON)
+    assert len(candidates) == 2000
+    assert candidates[0].taken_at.startswith("0001")
+    assert candidates[-1].taken_at.startswith("2001")
 
 
 def test_noncanonical_immich_ids_are_skipped_or_rejected():

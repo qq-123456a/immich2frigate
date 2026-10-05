@@ -25,6 +25,7 @@ from .frigate_client import (
     FrigateReadOnlyClient,
 )
 from .frigate_names import frigate_face_name
+from .settings import FrigateSettings
 
 
 # Face crops produced by the enrollment pipeline are normally a few hundred KB.
@@ -44,6 +45,13 @@ class FrigateWriteClient(FrigateReadOnlyClient):
     trusted internal API port.  Redirects are disabled and responses are
     bounded; request/response data is never logged here.
     """
+
+    def __init__(
+        self, settings: FrigateSettings, timeout: float = 60, *, opener=None
+    ) -> None:
+        """Allow cold Frigate face processing more than the default read timeout."""
+
+        super().__init__(settings, timeout=timeout, opener=opener)
 
     def inventory(self) -> dict[str, tuple[str, ...]]:
         """Return current registered names and image filenames.

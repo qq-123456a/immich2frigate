@@ -14,7 +14,10 @@ from uuid import UUID
 import numpy as np
 
 from .immich_client import FaceCandidate, PersonRecord
-from .selection import VectorFace
+from .selection import MAX_SELECTION_CANDIDATES, VectorFace
+
+_MAX_SQL_CANDIDATES = min(500, MAX_SELECTION_CANDIDATES)
+_MAX_RECENT_SQL_CANDIDATES = 200
 
 
 class ImmichVectorStoreError(RuntimeError):
@@ -73,6 +76,146 @@ class ImmichVectorStore:
                 )
             )
         results.sort(key=lambda item: (item.source.taken_at, item.source.asset_id, item.source.face_id or ""))
+        return results
+
+    def candidates_for_person(
+        self,
+        person: PersonRecord,
+        *,
+        years: int = 100,
+        include_face_ids: tuple[str, ...] = (),
+    ) -> list[VectorFace]:
+        """Read boxes and vectors in one bounded query, sampling across time.
+
+        The Immich HTTP search API can require one `/faces` request per image.
+        Reading its existing face, asset, and embedding rows avoids that N+1
+        behavior and fetches previews only for the bounded candidate set.
+        """
+        _uuid(person.person_id, "person ID")
+        if isinstance(years, bool) or not isinstance(years, int) or not 1 <= years <= 100:
+            raise ValueError("years must be between 1 and 100")
+        for face_id in include_face_ids:
+            _uuid(face_id, "face ID")
+        query = """
+            WITH valid AS MATERIALIZED (
+                SELECT
+                    af.id::text AS face_id,
+                    af."assetId"::text AS asset_id,
+                    COALESCE(a."fileCreatedAt", a."localDateTime") AS taken_at
+                FROM asset_face AS af
+                INNER JOIN asset AS a ON a.id = af."assetId"
+                INNER JOIN face_search AS fs ON fs."faceId" = af.id
+                WHERE af."personGroupId" = %s::uuid
+                  AND af."deletedAt" IS NULL
+                  AND af."isVisible" IS TRUE
+                  AND a."deletedAt" IS NULL
+                  AND a.type = 'IMAGE'
+                  AND a.checksum IS NOT NULL
+                  AND COALESCE(a."fileCreatedAt", a."localDateTime") >=
+                      CURRENT_TIMESTAMP - (%s * INTERVAL '1 year')
+                  AND 0 <= af."boundingBoxX1"
+                  AND af."boundingBoxX1" < af."boundingBoxX2"
+                  AND af."boundingBoxX2" <= af."imageWidth"
+                  AND 0 <= af."boundingBoxY1"
+                  AND af."boundingBoxY1" < af."boundingBoxY2"
+                  AND af."boundingBoxY2" <= af."imageHeight"
+            ), bucketed AS (
+                SELECT valid.*, NTILE(%s) OVER (
+                    ORDER BY taken_at, asset_id, face_id
+                ) AS sample_bucket
+                FROM valid
+            ), sampled AS (
+                SELECT bucketed.*, ROW_NUMBER() OVER (
+                    PARTITION BY sample_bucket ORDER BY taken_at, asset_id, face_id
+                ) AS sample_slot
+                FROM bucketed
+            ), recent AS (
+                SELECT face_id, asset_id, taken_at
+                FROM valid
+                ORDER BY taken_at DESC, asset_id, face_id
+                LIMIT %s
+            ), chosen AS (
+                SELECT face_id, asset_id, taken_at
+                FROM sampled
+                WHERE sample_slot = 1
+                UNION
+                SELECT face_id, asset_id, taken_at
+                FROM recent
+                UNION
+                SELECT face_id, asset_id, taken_at
+                FROM valid
+                WHERE face_id = ANY(%s::text[])
+            )
+            SELECT
+                af.id::text AS face_id,
+                af."assetId"::text AS asset_id,
+                COALESCE(a."fileCreatedAt", a."localDateTime")::text AS taken_at,
+                encode(a.checksum, 'hex') AS checksum,
+                af."boundingBoxX1" AS x1,
+                af."boundingBoxY1" AS y1,
+                af."boundingBoxX2" AS x2,
+                af."boundingBoxY2" AS y2,
+                af."imageWidth" AS frame_width,
+                af."imageHeight" AS frame_height,
+                fs.embedding::text AS face_embedding,
+                ss.embedding::text AS scene_embedding
+            FROM chosen AS c
+            INNER JOIN asset_face AS af ON af.id::text = c.face_id
+            INNER JOIN asset AS a ON a.id = af."assetId"
+            INNER JOIN face_search AS fs ON fs."faceId" = af.id
+            LEFT JOIN smart_search AS ss ON ss."assetId" = af."assetId"
+            ORDER BY c.taken_at, c.asset_id, c.face_id
+        """
+        try:
+            import psycopg
+
+            with psycopg.connect(
+                self.database_url,
+                connect_timeout=self.connect_timeout,
+                autocommit=True,
+                options="-c default_transaction_read_only=on",
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        query,
+                        (
+                            person.person_id,
+                            years,
+                            _MAX_SQL_CANDIDATES,
+                            _MAX_RECENT_SQL_CANDIDATES,
+                            list(include_face_ids),
+                        ),
+                    )
+                    rows = cursor.fetchall()
+        except Exception as error:
+            raise ImmichVectorStoreError(
+                f"Immich candidate read failed ({type(error).__name__})"
+            ) from None
+
+        results: list[VectorFace] = []
+        for row in rows:
+            if not isinstance(row, tuple) or len(row) != 12:
+                raise ImmichVectorStoreError("Immich candidate query returned an unexpected row")
+            face_id, asset_id, taken_at, checksum, x1, y1, x2, y2, width, height, face_vector, scene_vector = row
+            if not all(isinstance(value, str) and value for value in (face_id, asset_id, taken_at, checksum)):
+                continue
+            try:
+                candidate = FaceCandidate(
+                    person_id=person.person_id,
+                    face_id=face_id,
+                    asset_id=asset_id,
+                    taken_at=taken_at,
+                    checksum=checksum,
+                    box=(float(x1), float(y1), float(x2), float(y2)),
+                    frame=(int(width), int(height)),
+                )
+                _uuid(candidate.face_id, "face ID")
+                _uuid(candidate.asset_id, "asset ID")
+                face_embedding = _parse_vector(face_vector, "face")
+                scene_embedding = None if scene_vector is None else _parse_vector(scene_vector, "scene")
+            except (TypeError, ValueError, OverflowError):
+                continue
+            results.append(VectorFace(candidate, face_embedding, scene_embedding))
         return results
 
     def _read_rows(

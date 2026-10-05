@@ -1,0 +1,35 @@
+services:
+  immich2frigate-sync:
+    build: .
+    container_name: immich2frigate-sync
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      IMMICH_URL: http://immich25_server:2283
+      FRIGATE_URL: http://frigate:5000
+    command:
+      - sync
+      - --registry
+      - /var/lib/immich2frigate/identity-registry.json
+      - --state
+      - /var/lib/immich2frigate/sync-state.json
+      - --loop-seconds
+      - "21600"
+    volumes:
+      - type: bind
+        source: ${IMMICH2FRIGATE_DATA_DIR:?Set IMMICH2FRIGATE_DATA_DIR in .env}
+        target: /var/lib/immich2frigate
+      - type: bind
+        source: ${IMMICH2FRIGATE_BACKUP_DIR:?Set IMMICH2FRIGATE_BACKUP_DIR in .env}
+        target: /backups
+    networks:
+      - immich
+      - frigate
+
+networks:
+  immich:
+    name: immich25_default
+    external: true
+  frigate:
+    name: home-assistance_default
+    external: true
