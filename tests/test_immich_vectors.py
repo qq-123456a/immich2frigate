@@ -81,7 +81,19 @@ def test_vector_store_is_read_only_and_returns_both_vectors(monkeypatch):
     assert cursor.executed[1][0] == PERSON
     assert cursor.executed[1][1] == [FACE]
     assert "SELECT" in cursor.executed[0]
+    assert "LEFT JOIN smart_search" in cursor.executed[0]
     assert all(word not in cursor.executed[0].upper() for word in ["INSERT ", "UPDATE ", "DELETE "])
+
+
+def test_vector_store_keeps_face_when_smart_search_vector_is_missing(monkeypatch):
+    install_psycopg(monkeypatch, [(FACE, ASSET, "[1,0,0]", None)])
+    store = ImmichVectorStore("postgresql://reader:placeholder@immich-db/immich")
+
+    result = store.vectors_for_person(PersonRecord(PERSON, "Amy"), [candidate()])
+
+    assert len(result) == 1
+    assert np.allclose(result[0].face_embedding, [1, 0, 0])
+    assert result[0].scene_embedding is None
 
 
 def test_vector_store_rejects_invalid_vectors(monkeypatch):

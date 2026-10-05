@@ -10,7 +10,7 @@ FACE = "00000000-0000-4000-8000-000000000002"
 ASSET = "10000000-0000-4000-8000-000000000003"
 
 
-def candidate(box=(0.0, 0.0, 100.0, 100.0)):
+def candidate(box=(25.0, 25.0, 75.0, 75.0)):
     return FaceCandidate(
         person_id=PERSON,
         face_id=FACE,
@@ -36,7 +36,9 @@ def test_clear_color_large_face_is_foundation_eligible():
 
     assert quality.training_eligible is True
     assert quality.foundation_eligible is True
-    assert quality.face_area == 10000
+    assert quality.face_area == 2500
+    assert quality.face_area_ratio == 0.25
+    assert quality.context_retention == 1.0
 
 
 def test_grayscale_or_small_face_is_rejected():
@@ -45,7 +47,18 @@ def test_grayscale_or_small_face_is_rejected():
     assert gray_quality.training_eligible is False
 
     small_quality = assess_training_crop(
-        candidate(box=(0.0, 0.0, 20.0, 20.0)),
+        candidate(box=(40.0, 40.0, 60.0, 60.0)),
         clear_color_image(),
     )
     assert small_quality.training_eligible is False
+
+
+def test_edge_clipped_face_can_expand_but_not_seed_foundation():
+    quality = assess_training_crop(
+        candidate(box=(0.0, 25.0, 50.0, 75.0)),
+        clear_color_image(),
+    )
+
+    assert quality.training_eligible is True
+    assert quality.foundation_eligible is False
+    assert quality.context_retention == 0.0
