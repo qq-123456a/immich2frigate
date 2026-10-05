@@ -55,9 +55,13 @@ class FakeVectors:
         rows = []
         for i, item in enumerate(candidates):
             if self.diverse and i >= 5:
-                angle = (i - 4) * np.pi / 3
-                face = np.array([np.cos(angle), np.sin(angle)], np.float32)
-                scene = np.array([np.sin(angle), np.cos(angle)], np.float32)
+                # Add meaningful variation while remaining inside the same
+                # synthetic identity core. Extreme opposite vectors are identity
+                # outliers and should no longer be treated as useful diversity.
+                face_angle = (i - 4) * 0.18
+                scene_angle = (i - 4) * 0.45
+                face = np.array([np.cos(face_angle), np.sin(face_angle)], np.float32)
+                scene = np.array([np.cos(scene_angle), np.sin(scene_angle)], np.float32)
             else:
                 face = np.array([1.0, (i + 1) * 0.001], np.float32)
                 scene = np.array([1.0, (i + 1) * 0.001], np.float32)
