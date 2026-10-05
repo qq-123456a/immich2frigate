@@ -18,7 +18,7 @@ from .immich_client import FaceCandidate
 
 _DEFAULT_CONTEXT = 0.5
 _DEFAULT_ASPECT_TOLERANCE = 0.01
-_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 ImageFormat = Literal["jpeg", "jpg", "webp"]
 
 
@@ -30,6 +30,7 @@ class CandidateUpload:
     content_type: str
     extension: str
     crop_box: tuple[int, int, int, int]
+    face_box: tuple[float, float, float, float]
     crop_bgr: np.ndarray = field(repr=False)
 
 
@@ -87,19 +88,20 @@ def prepare_candidate_upload(
     scaled_x2, scaled_y2 = x2 * scale_x, y2 * scale_y
     box_width = scaled_x2 - scaled_x1
     box_height = scaled_y2 - scaled_y1
-    scaled_x1 -= box_width * context
-    scaled_y1 -= box_height * context
-    scaled_x2 += box_width * context
-    scaled_y2 += box_height * context
+    face_x1, face_y1, face_x2, face_y2 = scaled_x1, scaled_y1, scaled_x2, scaled_y2
+    crop_x1 = scaled_x1 - box_width * context
+    crop_y1 = scaled_y1 - box_height * context
+    crop_x2 = scaled_x2 + box_width * context
+    crop_y2 = scaled_y2 + box_height * context
 
     # floor/ceil preserve the entire requested face box.  Clipping happens
     # after rounding so an edge-touching face can never produce an invalid
     # negative slice.
     crop_box = (
-        max(0, min(preview_width - 1, math.floor(scaled_x1))),
-        max(0, min(preview_height - 1, math.floor(scaled_y1))),
-        max(1, min(preview_width, math.ceil(scaled_x2))),
-        max(1, min(preview_height, math.ceil(scaled_y2))),
+        max(0, min(preview_width - 1, math.floor(crop_x1))),
+        max(0, min(preview_height - 1, math.floor(crop_y1))),
+        max(1, min(preview_width, math.ceil(crop_x2))),
+        max(1, min(preview_height, math.ceil(crop_y2))),
     )
     crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
     if crop_x2 <= crop_x1 or crop_y2 <= crop_y1:
@@ -107,6 +109,12 @@ def prepare_candidate_upload(
     crop = np.ascontiguousarray(image[crop_y1:crop_y2, crop_x1:crop_x2])
     if crop.size == 0:
         raise ValueError("candidate crop is empty after scaling and clipping")
+    face_box = (
+        max(0.0, face_x1 - crop_x1),
+        max(0.0, face_y1 - crop_y1),
+        min(float(crop_x2 - crop_x1), face_x2 - crop_x1),
+        min(float(crop_y2 - crop_y1), face_y2 - crop_y1),
+    )
 
     extension, content_type, params = _encoding_options(cv2, image_format, quality)
     success, encoded = cv2.imencode(extension, crop, params)
@@ -122,6 +130,7 @@ def prepare_candidate_upload(
         content_type=content_type,
         extension=extension[1:],
         crop_box=crop_box,
+        face_box=face_box,
         crop_bgr=crop,
     )
 

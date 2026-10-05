@@ -34,6 +34,7 @@ def test_scales_original_box_adds_context_and_encodes_webp_in_memory():
     # context on each side produces (0,0)-(160,140) after clipping.
     assert result.crop_box == (0, 0, 160, 140)
     assert result.crop_bgr.shape == (140, 160, 3)
+    assert result.face_box == (40.0, 20.0, 120.0, 100.0)
     assert result.content_type == "image/webp"
     assert result.extension == "webp"
     assert result.encoded[:4] == b"RIFF"

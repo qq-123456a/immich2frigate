@@ -9,6 +9,7 @@ secrets/
 .if_cache/
 frigate_train/
 .incomplete/
+*.lock
 
 # Local face data, exports, state, reports, and backups must never enter Git.
 data/

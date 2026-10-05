@@ -101,3 +101,21 @@ def test_vector_store_rejects_invalid_vectors(monkeypatch):
     store = ImmichVectorStore("postgresql://reader:placeholder@immich-db/immich")
     with pytest.raises(ImmichVectorStoreError, match="zero"):
         store.vectors_for_person(PersonRecord(PERSON, "Amy"), [candidate()])
+
+
+@pytest.mark.parametrize("malformed", ["[1,2,garbage]", "[1,,2]", "{1,2,garbage}"])
+def test_vector_store_rejects_malformed_vector_text(monkeypatch, malformed):
+    install_psycopg(monkeypatch, [(FACE, ASSET, malformed, None)])
+    store = ImmichVectorStore("postgresql://reader:placeholder@immich-db/immich")
+
+    with pytest.raises(ImmichVectorStoreError):
+        store.vectors_for_person(PersonRecord(PERSON, "Amy"), [candidate()])
+
+
+def test_vector_store_accepts_postgres_array_vector_text(monkeypatch):
+    install_psycopg(monkeypatch, [(FACE, ASSET, "{1,0,0}", None)])
+    store = ImmichVectorStore("postgresql://reader:placeholder@immich-db/immich")
+
+    result = store.vectors_for_person(PersonRecord(PERSON, "Amy"), [candidate()])
+
+    assert np.allclose(result[0].face_embedding, [1, 0, 0])

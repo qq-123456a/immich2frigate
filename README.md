@@ -12,6 +12,8 @@ The selector uses Immich's persisted face embeddings to build a conservative ide
 
 After the first five, extra images are optional. They are added only when the Immich face vector, plus the Smart Search scene vector when available, shows meaningfully new coverage. Smart Search embeddings are helpful but not required: candidates without one fall back to face-vector novelty rather than disappearing from the pool. Thirty images is an upper bound for the initial import, not a target that must be filled.
 
+For bounded memory use, selection evaluates at most 2,000 candidates per person, sampled across the sorted timeline while retaining foundation-quality candidates first.
+
 This follows Frigate's guidance to start with a few clear, front-facing photos and expand slowly with useful variation. Frigate also warns that diversity matters more than volume and that low-quality or overly similar training images can reduce accuracy.
 
 ## Rebuild flow

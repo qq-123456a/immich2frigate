@@ -129,11 +129,15 @@ def _parse_vector(value: object, label: str) -> np.ndarray:
     if not isinstance(value, str):
         raise ImmichVectorStoreError(f"Immich {label} embedding was not text")
     text = value.strip()
-    if len(text) < 2 or text[0] not in "[{" or text[-1] not in "]}":
+    valid_brackets = len(text) >= 2 and (text[0], text[-1]) in {("[", "]"), ("{", "}")}
+    if not valid_brackets:
         raise ImmichVectorStoreError(f"Immich {label} embedding had an unexpected format")
     try:
-        vector = np.fromstring(text[1:-1], sep=",", dtype=np.float32)
-    except (TypeError, ValueError):
+        components = [component.strip() for component in text[1:-1].split(",")]
+        if not components or any(not component for component in components):
+            raise ValueError
+        vector = np.asarray([float(component) for component in components], dtype=np.float32)
+    except (OverflowError, TypeError, ValueError):
         raise ImmichVectorStoreError(f"Immich {label} embedding could not be parsed") from None
     if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
         raise ImmichVectorStoreError(f"Immich {label} embedding was invalid")

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .frigate_names import frigate_face_name
-from .identity_registry import PersonIdentityRegistry
+from .identity_registry import PersonIdentityRegistry, validate_frigate_name
 from .immich_client import ImmichReadOnlyClient, PersonRecord
 from .immich_vectors import ImmichVectorStore
 from .selection import (
@@ -25,6 +26,7 @@ from .upload_image import prepare_candidate_upload
 class PersonTrainingPlan:
     person: PersonRecord = field(repr=False)
     candidates: tuple[VectorFace, ...] = field(repr=False)
+    uploads: tuple[bytes, ...] = field(repr=False)
 
     @property
     def target_count(self) -> int:
@@ -59,11 +61,12 @@ def build_rebuild_plan(
 
     The destructive reset is allowed only when every named person has at least
     foundation_count high-quality foundation images. Extra images are optional
-    and selected only when their Immich face and scene vectors add useful coverage.
+    and selected when face vectors, plus available scene vectors, add useful coverage.
     """
 
     plans: list[PersonTrainingPlan] = []
     for person in immich.people():
+        validate_frigate_name(frigate_face_name(person.name))
         raw = immich.candidates(person.person_id)
         embedded = vectors.vectors_for_person(person, raw)
 
@@ -73,7 +76,9 @@ def build_rebuild_plan(
             try:
                 preview = immich.preview(candidate.source.asset_id)
                 upload = prepare_candidate_upload(candidate.source, preview)
-                quality = assess_training_crop(candidate.source, upload.crop_bgr)
+                quality = assess_training_crop(
+                    candidate.source, upload.crop_bgr, face_box=upload.face_box
+                )
             except ValueError:
                 continue
             if quality.training_eligible:
@@ -97,7 +102,24 @@ def build_rebuild_plan(
         )
         if len(selected) < foundation_count:
             raise RuntimeError("adaptive selection returned too few foundation faces")
-        plans.append(PersonTrainingPlan(person=person, candidates=tuple(selected)))
+        uploads: list[bytes] = []
+        for index, candidate in enumerate(selected):
+            preview = immich.preview(candidate.source.asset_id)
+            upload = prepare_candidate_upload(candidate.source, preview)
+            quality = assess_training_crop(
+                candidate.source, upload.crop_bgr, face_box=upload.face_box
+            )
+            eligible = quality.foundation_eligible if index < foundation_count else quality.training_eligible
+            if not eligible:
+                raise ValueError("selected Immich face changed or failed quality preflight")
+            uploads.append(upload.encoded)
+        plans.append(
+            PersonTrainingPlan(
+                person=person,
+                candidates=tuple(selected),
+                uploads=tuple(uploads),
+            )
+        )
 
     if not plans:
         raise ValueError("Immich returned no named people")
@@ -110,7 +132,10 @@ def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, obje
     root = Path(backup_dir)
     root.mkdir(parents=True, exist_ok=True)
     inventory = frigate.inventory()
-    manifest: dict[str, object] = {"faces": {}}
+    manifest: dict[str, object] = {
+        "faces": {},
+        "inventory": {name: list(filenames) for name, filenames in inventory.items()},
+    }
     for name, filenames in inventory.items():
         face_dir = root / _safe_backup_component(name)
         face_dir.mkdir(parents=True, exist_ok=True)
@@ -127,6 +152,8 @@ def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, obje
                 }
             )
         manifest["faces"][name] = rows
+    if frigate.inventory() != inventory:
+        raise RuntimeError("Frigate face inventory changed during backup; refusing reset")
     (root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
@@ -134,10 +161,21 @@ def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, obje
     return manifest
 
 
-def reset_registered_library(frigate) -> int:
+def reset_registered_library(
+    frigate,
+    *,
+    expected_inventory: Mapping[str, Sequence[str]] | None = None,
+) -> int:
     """Delete all registered face images from a freshly read inventory."""
 
     inventory = frigate.inventory()
+    if expected_inventory is not None:
+        expected = {
+            name: tuple(sorted(filenames))
+            for name, filenames in sorted(expected_inventory.items())
+        }
+        if inventory != expected:
+            raise RuntimeError("Frigate face inventory changed after backup; refusing reset")
     deleted = 0
     for name, filenames in inventory.items():
         if filenames:
@@ -159,6 +197,14 @@ def apply_rebuild_plan(
 ) -> RebuildResult:
     """Register each person's adaptive candidate count exactly."""
 
+    if not plan.people or any(
+        len(person_plan.candidates) != len(person_plan.uploads)
+        or not FOUNDATION_COUNT <= person_plan.target_count <= MAX_TRAINING_COUNT
+        or any(not isinstance(upload, bytes) or not upload for upload in person_plan.uploads)
+        for person_plan in plan.people
+    ):
+        raise ValueError("rebuild plan contains invalid preflighted uploads")
+
     registered_total = 0
     per_person_counts: list[int] = []
 
@@ -167,11 +213,8 @@ def apply_rebuild_plan(
         frigate.create_face(name)
         successful = 0
 
-        for candidate in person_plan.candidates:
-            preview = immich.preview(candidate.source.asset_id)
-            upload = prepare_candidate_upload(candidate.source, preview)
-
-            response = frigate.register_face(name, upload.encoded)
+        for image_bytes in person_plan.uploads:
+            response = frigate.register_face(name, image_bytes)
             if response.get("success") is not True:
                 raise RuntimeError("Frigate did not confirm face registration")
             successful += 1

@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 
 from immich2frigate.immich_client import FaceCandidate, PersonRecord
-from immich2frigate.selection import VectorFace, select_adaptive_faces
+from immich2frigate.selection import (
+    MAX_SELECTION_CANDIDATES,
+    VectorFace,
+    select_adaptive_faces,
+)
 
 PERSON = "00000000-0000-4000-8000-000000000001"
 
@@ -103,6 +107,35 @@ def test_isolated_face_outlier_is_not_rewarded_for_novelty():
     assert outlier.source.face_id not in {item.source.face_id for item in result}
 
 
+def test_foundation_fails_closed_when_minimum_set_contains_an_identity_outlier():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    candidates = [vector_face(i, [1.0, i * 0.001]) for i in range(1, 5)]
+    candidates.append(vector_face(5, [-1.0, 0.0]))
+
+    with pytest.raises(ValueError, match="identity core"):
+        select_adaptive_faces(person, candidates, candidates)
+
+
+def test_selector_enforces_hard_training_cap():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    candidates = [vector_face(i, [1.0, i * 0.001]) for i in range(1, 6)]
+
+    with pytest.raises(ValueError, match="must not exceed 30"):
+        select_adaptive_faces(person, candidates, candidates, max_count=31)
+
+
+def test_selector_bounds_large_candidate_sets():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    candidates = [
+        vector_face(index, [1.0, index * 0.000001])
+        for index in range(1, MAX_SELECTION_CANDIDATES + 2)
+    ]
+
+    result = select_adaptive_faces(person, candidates[:5], candidates)
+
+    assert len(result) == 5
+
+
 def test_foundation_avoids_near_duplicates_when_core_alternatives_exist():
     person = PersonRecord(PERSON, "Synthetic Person")
     duplicates = [
@@ -110,9 +143,9 @@ def test_foundation_avoids_near_duplicates_when_core_alternatives_exist():
         for i in range(1, 6)
     ]
     alternatives = [
-        vector_face(10, [0.99, 0.12], [0.9, 0.4]),
-        vector_face(11, [0.98, -0.15], [0.8, -0.5]),
-        vector_face(12, [0.97, 0.20], [0.7, 0.7]),
+        vector_face(10, [0.9, 0.45], [0.9, 0.4]),
+        vector_face(11, [0.95, -0.32], [0.8, -0.5]),
+        vector_face(12, [0.85, 0.55], [0.7, 0.7]),
     ]
     candidates = duplicates + alternatives
 
@@ -121,6 +154,23 @@ def test_foundation_avoids_near_duplicates_when_core_alternatives_exist():
 
     assert len(result) == 5
     assert any(item.source.face_id in selected for item in alternatives)
+
+
+def test_foundation_duplicate_gate_uses_face_vectors_not_scene_vectors():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    duplicates = [
+        vector_face(i, [1.0, i * 0.0001], [np.cos(i), np.sin(i)])
+        for i in range(1, 6)
+    ]
+    alternatives = [
+        vector_face(10, [0.95, 0.32], [1.0, 0.0]),
+        vector_face(11, [0.9, -0.45], [0.0, 1.0]),
+        vector_face(12, [0.85, 0.55], [-1.0, 0.0]),
+    ]
+
+    result = select_adaptive_faces(person, duplicates + alternatives, duplicates + alternatives, max_count=5)
+
+    assert any(item.source.face_id in {face.source.face_id for face in alternatives} for item in result)
 
 
 def test_missing_scene_embeddings_fall_back_to_face_novelty():

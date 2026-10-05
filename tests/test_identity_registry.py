@@ -37,6 +37,15 @@ def test_registry_persists_binding_and_keeps_sync_id_when_name_changes(tmp_path)
     assert renamed.frigate_name == "New_Name"
 
 
+def test_preflight_checks_planned_binding_conflicts_and_writability(tmp_path):
+    store = registry(tmp_path / "private" / "identities.json")
+    store.bind(PERSON, "Amy")
+
+    store.preflight_bindings([(PERSON, "Amy")])
+    with pytest.raises(ValueError, match="already bound"):
+        store.preflight_bindings([(OTHER, "Amy")])
+
+
 def test_reconcile_uses_person_id_and_bootstraps_exact_name_labels(tmp_path):
     store = registry(tmp_path / "identities.json")
     store.bind(PERSON, "Old_Name")

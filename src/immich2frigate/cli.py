@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from .enrollment import (
@@ -35,7 +37,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "rebuild":
-        return _rebuild(args)
+        with _registry_lock(Path(args.registry)):
+            return _rebuild(args)
     raise AssertionError("unreachable")
 
 
@@ -54,16 +57,21 @@ def _rebuild(args) -> int:
 
         # Build the full adaptive plan for every person before deleting anything.
         plan = build_rebuild_plan(immich, vectors)
-
-        backup_path = Path(args.backup_dir)
-        manifest = backup_registered_library(frigate, backup_path)
-        deleted = reset_registered_library(frigate)
-
+        if frigate.verify_target() != target:
+            raise RuntimeError("Frigate target changed while the rebuild plan was being prepared")
         registry = PersonIdentityRegistry(
             args.registry,
             immich_origin=immich_settings.immich_url,
             frigate_origin=target.origin,
         )
+        registry.preflight_bindings(
+            (person.person.person_id, person.person.name) for person in plan.people
+        )
+
+        backup_path = Path(args.backup_dir)
+        manifest = backup_registered_library(frigate, backup_path)
+        deleted = reset_registered_library(frigate, expected_inventory=manifest["inventory"])
+
         result = apply_rebuild_plan(plan, immich, frigate, registry=registry)
 
     summary = {
@@ -80,3 +88,20 @@ def _rebuild(args) -> int:
     }
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0
+
+
+@contextmanager
+def _registry_lock(registry_path: Path):
+    lock_path = registry_path.with_name(registry_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise SystemExit("another synchronization is active or its lock needs manual review") from None
+    try:
+        os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
+        os.fsync(descriptor)
+        yield
+    finally:
+        os.close(descriptor)
+        lock_path.unlink(missing_ok=True)

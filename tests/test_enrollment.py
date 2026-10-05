@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from immich2frigate.enrollment import build_rebuild_plan, reset_registered_library
+from immich2frigate.enrollment import (
+    apply_rebuild_plan,
+    backup_registered_library,
+    build_rebuild_plan,
+    reset_registered_library,
+)
+from immich2frigate.identity_registry import PersonIdentityRegistry
 from immich2frigate.immich_client import FaceCandidate, PersonRecord
 from immich2frigate.selection import VectorFace
 
@@ -59,7 +65,7 @@ class FakeVectors:
                 # synthetic identity core. Extreme opposite vectors are identity
                 # outliers and should no longer be treated as useful diversity.
                 face_angle = (i - 4) * 0.18
-                scene_angle = (i - 4) * 0.45
+                scene_angle = (i - 4) * 0.65
                 face = np.array([np.cos(face_angle), np.sin(face_angle)], np.float32)
                 scene = np.array([np.cos(scene_angle), np.sin(scene_angle)], np.float32)
             else:
@@ -83,6 +89,23 @@ def test_rebuild_plan_expands_when_distribution_is_genuinely_diverse():
     assert 5 < plan.people[0].target_count <= 30
 
 
+def test_apply_uses_preflighted_uploads_without_refetching_immich(tmp_path):
+    immich = FakeImmich(5)
+    plan = build_rebuild_plan(immich, FakeVectors())
+    immich.preview = lambda asset_id: (_ for _ in ()).throw(AssertionError("unexpected preview refetch"))
+    frigate = FakeFrigate()
+    registry = PersonIdentityRegistry(
+        tmp_path / "identities.json",
+        immich_origin="http://immich:2283/api",
+        frigate_origin="http://frigate:5000",
+    )
+
+    result = apply_rebuild_plan(plan, immich, frigate, registry=registry)
+
+    assert result.registered_images == 5
+    assert registry.binding(PERSON).frigate_name == "Synthetic_Person"
+
+
 class FakeFrigate:
     def __init__(self):
         self.state = {"Amy": ("a.webp", "b.webp"), "Bob": ("c.webp",)}
@@ -94,6 +117,28 @@ class FakeFrigate:
     def delete_faces(self, name, filenames):
         self.deleted.append((name, tuple(filenames)))
         self.state.pop(name, None)
+
+    def face_image_bytes(self, name, filename):
+        return f"{name}/{filename}".encode()
+
+    def create_face(self, name):
+        self.state.setdefault(name, ())
+
+    def register_face(self, name, image_bytes):
+        assert image_bytes.startswith(b"RIFF")
+        self.state[name] = (*self.state.get(name, ()), f"{len(image_bytes)}.webp")
+        return {"success": True}
+
+
+def test_backup_inventory_must_match_before_reset(tmp_path):
+    frigate = FakeFrigate()
+    manifest = backup_registered_library(frigate, tmp_path)
+    frigate.state["New person"] = ("new.webp",)
+
+    with pytest.raises(RuntimeError, match="changed after backup"):
+        reset_registered_library(frigate, expected_inventory=manifest["inventory"])
+
+    assert frigate.deleted == []
 
 
 def test_reset_deletes_explicit_inventory_and_verifies_empty():

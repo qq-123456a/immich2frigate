@@ -10,6 +10,7 @@ from .immich_client import FaceCandidate, PersonRecord
 
 FOUNDATION_COUNT = 5
 MAX_TRAINING_COUNT = 30
+MAX_SELECTION_CANDIDATES = 2_000
 DEFAULT_NOVELTY_DISTANCE = 0.08
 FOUNDATION_DUPLICATE_DISTANCE = 0.025
 _IDENTITY_MEDOID_MARGIN = 0.35
@@ -50,6 +51,8 @@ def select_adaptive_faces(
         raise ValueError("foundation_count must be a positive integer")
     if isinstance(max_count, bool) or not isinstance(max_count, int) or max_count < foundation_count:
         raise ValueError("max_count must be at least foundation_count")
+    if max_count > MAX_TRAINING_COUNT:
+        raise ValueError(f"max_count must not exceed {MAX_TRAINING_COUNT}")
     if (
         isinstance(novelty_distance, bool)
         or not isinstance(novelty_distance, (int, float))
@@ -65,11 +68,26 @@ def select_adaptive_faces(
         item.source.face_id: item for item in expansion_candidates if item.source.face_id is not None
     }
     for item in foundation_candidates:
-        if item.source.face_id is None or item.source.face_id not in expansion_by_face:
+        match = expansion_by_face.get(item.source.face_id)
+        if item.source.face_id is None or match is None:
             raise ValueError("foundation candidates must be included in expansion candidates")
+        if match.source.asset_id != item.source.asset_id:
+            raise ValueError("foundation and expansion candidates disagree on the asset ID")
 
     expansion = sorted(expansion_candidates, key=_candidate_key)
     foundation = sorted(foundation_candidates, key=_candidate_key)
+    if len(expansion) > MAX_SELECTION_CANDIDATES:
+        foundation_ids = {item.source.face_id for item in foundation}
+        if len(foundation) >= MAX_SELECTION_CANDIDATES:
+            foundation = _sample_evenly(foundation, MAX_SELECTION_CANDIDATES)
+            foundation_ids = {item.source.face_id for item in foundation}
+        remaining = [item for item in expansion if item.source.face_id not in foundation_ids]
+        room = MAX_SELECTION_CANDIDATES - len(foundation_ids)
+        selected_ids = foundation_ids | {
+            item.source.face_id for item in _sample_evenly(remaining, room)
+        }
+        expansion = [item for item in expansion if item.source.face_id in selected_ids]
+        foundation = [item for item in foundation if item.source.face_id in selected_ids]
     expansion_face = _validated_matrix(person, expansion, attr="face_embedding")
     foundation_face = _validated_matrix(person, foundation, attr="face_embedding")
     expansion_face_unit = _row_normalize(expansion_face)
@@ -89,7 +107,9 @@ def select_adaptive_faces(
     safe_foundation_face = np.stack(
         [foundation_face_unit[index] for index, item in enumerate(foundation) if item.source.face_id in safe_face_ids]
     ).astype(np.float32, copy=False)
-    foundation_pair_distance = _combined_pair_distance(person, safe_foundation)
+    foundation_pair_distance = _combined_pair_distance(
+        person, safe_foundation, include_scene=False
+    )
     centrality_distance = _medoid_distances(safe_foundation_face)
     density_distance = _local_density_distances(safe_foundation_face)
     core_score = centrality_distance + density_distance
@@ -160,9 +180,6 @@ def _select_foundation_indices(
 
 def _identity_safe_mask(face_unit: np.ndarray, *, minimum_keep: int) -> np.ndarray:
     size = face_unit.shape[0]
-    if size <= minimum_keep:
-        return np.ones(size, dtype=bool)
-
     similarity = np.clip(face_unit @ face_unit.T, -1.0, 1.0)
     medoid = int(np.argmax(np.mean(similarity, axis=1)))
     medoid_distance = 1.0 - similarity[:, medoid]
@@ -203,7 +220,12 @@ def _local_density_distances(face_unit: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(1.0 - np.mean(nearest, axis=1), dtype=np.float32)
 
 
-def _combined_pair_distance(person: PersonRecord, candidates: list[VectorFace]) -> np.ndarray:
+def _combined_pair_distance(
+    person: PersonRecord,
+    candidates: list[VectorFace],
+    *,
+    include_scene: bool = True,
+) -> np.ndarray:
     face = _row_normalize(_validated_matrix(person, candidates, attr="face_embedding"))
     face_similarity = np.clip(face @ face.T, -1.0, 1.0)
     similarity = face_similarity.copy()
@@ -211,30 +233,29 @@ def _combined_pair_distance(person: PersonRecord, candidates: list[VectorFace]) 
     scene_rows: list[np.ndarray] = []
     scene_indices: list[int] = []
     scene_dimension: int | None = None
-    for index, item in enumerate(candidates):
-        if item.scene_embedding is None:
-            continue
-        vector = np.asarray(item.scene_embedding, dtype=np.float32)
-        if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
-            raise ValueError("scene_embedding must be a finite one-dimensional vector")
-        norm = float(np.linalg.norm(vector))
-        if not np.isfinite(norm) or norm == 0:
-            raise ValueError("scene_embedding must have a finite, non-zero norm")
-        if scene_dimension is None:
-            scene_dimension = int(vector.size)
-        elif vector.size != scene_dimension:
-            raise ValueError("all available scene_embedding vectors must have the same dimension")
-        scene_rows.append(np.ascontiguousarray(vector))
-        scene_indices.append(index)
+    if include_scene:
+        for index, item in enumerate(candidates):
+            if item.scene_embedding is None:
+                continue
+            vector = np.asarray(item.scene_embedding, dtype=np.float32)
+            if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
+                raise ValueError("scene_embedding must be a finite one-dimensional vector")
+            norm = float(np.linalg.norm(vector))
+            if not np.isfinite(norm) or norm == 0:
+                raise ValueError("scene_embedding must have a finite, non-zero norm")
+            if scene_dimension is None:
+                scene_dimension = int(vector.size)
+            elif vector.size != scene_dimension:
+                raise ValueError("all available scene_embedding vectors must have the same dimension")
+            scene_rows.append(np.ascontiguousarray(vector))
+            scene_indices.append(index)
 
     if scene_rows:
         scene = _row_normalize(np.stack(scene_rows).astype(np.float32, copy=False))
         scene_similarity = np.clip(scene @ scene.T, -1.0, 1.0)
-        for row, candidate_index in enumerate(scene_indices):
-            for column, other_index in enumerate(scene_indices):
-                similarity[candidate_index, other_index] = (
-                    face_similarity[candidate_index, other_index] + scene_similarity[row, column]
-                ) * 0.5
+        indices = np.asarray(scene_indices, dtype=np.intp)
+        pairs = np.ix_(indices, indices)
+        similarity[pairs] = (face_similarity[pairs] + scene_similarity) * 0.5
 
     distance = 1.0 - similarity
     np.fill_diagonal(distance, 0.0)
@@ -247,6 +268,13 @@ def _candidate_key(item: VectorFace) -> tuple[str, str, str]:
         item.source.asset_id,
         item.source.face_id or "",
     )
+
+
+def _sample_evenly(candidates: list[VectorFace], count: int) -> list[VectorFace]:
+    if len(candidates) <= count:
+        return candidates
+    indices = np.linspace(0, len(candidates) - 1, count, dtype=np.intp)
+    return [candidates[index] for index in indices]
 
 
 def _validated_matrix(

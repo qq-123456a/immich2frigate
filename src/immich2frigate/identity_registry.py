@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -43,6 +44,28 @@ class PersonIdentityRegistry:
 
     def binding(self, immich_person_id: str) -> PersonIdentityBinding | None:
         return self._bindings.get(_person_id(immich_person_id))
+
+    def preflight_bindings(self, bindings: Iterable[tuple[str, str]]) -> None:
+        """Check planned labels and registry-path writability before remote writes."""
+
+        planned: dict[str, str] = {}
+        existing = {
+            frigate_face_name(item.frigate_name).casefold(): person_id
+            for person_id, item in self._bindings.items()
+        }
+        for raw_person_id, raw_name in bindings:
+            person_id = _person_id(raw_person_id)
+            name = validate_frigate_name(raw_name)
+            key = frigate_face_name(name).casefold()
+            owner = planned.get(key, existing.get(key))
+            if owner is not None and owner != person_id:
+                raise ValueError("Frigate label is already bound to another Immich person")
+            planned[key] = person_id
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.path.parent) as probe:
+            probe.flush()
+            os.fsync(probe.fileno())
 
     def bind(self, immich_person_id: str, frigate_name: str) -> PersonIdentityBinding:
         """Create/update one binding after the Frigate result is confirmed."""

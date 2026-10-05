@@ -10,6 +10,7 @@ from .frigate_registration import laplacian_variance_bgr
 from .immich_client import FaceCandidate
 
 MIN_FACE_AREA = 750
+MIN_FACE_DIMENSION = 20
 MIN_TRAINING_SHARPNESS = 200.0
 MIN_FOUNDATION_SHARPNESS = 250.0
 MIN_COLOR_SPREAD = 3.0
@@ -35,15 +36,17 @@ class TrainingQuality:
 def assess_training_crop(
     candidate: FaceCandidate,
     crop_bgr: np.ndarray,
+    *,
+    face_box: tuple[float, float, float, float],
 ) -> TrainingQuality:
     """Assess whether a crop is suitable for foundation or expansion training.
 
     This deliberately does not run a pose, expression, scene, or identity model.
     Sharpness uses the same Laplacian variance metric Frigate uses for its blur
     confidence filter. The remaining checks reject very small, effectively
-    grayscale, or strongly under/over-exposed crops. Face-area ratio and context
-    retention are returned as diagnostics rather than hard gates so close crops
-    are not discarded solely because of framing.
+    grayscale, or strongly under/over-exposed faces. When supplied, ``face_box``
+    measures these checks on the scaled Immich face region so surrounding
+    context cannot hide a poor or downscaled face.
     """
 
     image = _require_bgr(crop_bgr)
@@ -51,12 +54,31 @@ def assess_training_crop(
     frame_width, frame_height = candidate.frame
     face_width = x2 - x1
     face_height = y2 - y1
-    face_area = float(face_width * face_height)
-    face_area_ratio = face_area / float(frame_width * frame_height)
+    source_face_area = float(face_width * face_height)
+    face_area_ratio = source_face_area / float(frame_width * frame_height)
     context_retention = _context_retention(candidate)
-    sharpness = laplacian_variance_bgr(image)
+    if len(face_box) != 4 or not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and np.isfinite(value)
+        for value in face_box
+    ):
+        raise ValueError("face_box must contain four finite coordinates")
+    face_x1, face_y1, face_x2, face_y2 = face_box
+    if not (0 <= face_x1 < face_x2 <= image.shape[1] and 0 <= face_y1 < face_y2 <= image.shape[0]):
+        raise ValueError("face_box must fit inside the training crop")
+    quality_image = image[
+        int(np.floor(face_y1)) : int(np.ceil(face_y2)),
+        int(np.floor(face_x1)) : int(np.ceil(face_x2)),
+    ]
+    if quality_image.size == 0:
+        raise ValueError("face_box produced an empty training crop")
+    measured_width = face_x2 - face_x1
+    measured_height = face_y2 - face_y1
+    face_area = float(measured_width * measured_height)
+    sharpness = laplacian_variance_bgr(quality_image)
 
-    pixels = image.astype(np.float32, copy=False)
+    pixels = quality_image.astype(np.float32, copy=False)
     channel_spread = float(
         np.mean(np.max(pixels, axis=2) - np.min(pixels, axis=2), dtype=np.float64)
     )
@@ -71,6 +93,7 @@ def assess_training_crop(
 
     common = (
         face_area >= MIN_FACE_AREA
+        and min(measured_width, measured_height) >= MIN_FACE_DIMENSION
         and channel_spread >= MIN_COLOR_SPREAD
         and MIN_MEAN_LUMA <= mean_luma <= MAX_MEAN_LUMA
     )
