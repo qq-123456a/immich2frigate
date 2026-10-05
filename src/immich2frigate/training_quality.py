@@ -15,16 +15,19 @@ MIN_FOUNDATION_SHARPNESS = 250.0
 MIN_COLOR_SPREAD = 3.0
 MIN_MEAN_LUMA = 30.0
 MAX_MEAN_LUMA = 225.0
+_CONTEXT_RATIO = 0.5
 
 
 @dataclass(frozen=True, slots=True)
 class TrainingQuality:
-    """Simple photometric checks derived from Frigate's published guidance."""
+    """Simple photometric and crop-safety checks derived from Frigate guidance."""
 
     training_eligible: bool
     foundation_eligible: bool
     sharpness: float
     face_area: float
+    face_area_ratio: float
+    context_retention: float
     color_spread: float
     mean_luma: float
 
@@ -37,20 +40,26 @@ def assess_training_crop(
 
     This deliberately does not run a pose, expression, scene, or identity model.
     Sharpness uses the same Laplacian variance metric Frigate uses for its blur
-    confidence filter. The remaining checks only reject very small, effectively
-    grayscale, or strongly under/over-exposed crops.
+    confidence filter. The remaining checks reject very small, effectively
+    grayscale, or strongly under/over-exposed crops. Face-area ratio and context
+    retention are returned as diagnostics rather than hard gates so close crops
+    are not discarded solely because of framing.
     """
 
     image = _require_bgr(crop_bgr)
     x1, y1, x2, y2 = candidate.box
-    face_area = float((x2 - x1) * (y2 - y1))
+    frame_width, frame_height = candidate.frame
+    face_width = x2 - x1
+    face_height = y2 - y1
+    face_area = float(face_width * face_height)
+    face_area_ratio = face_area / float(frame_width * frame_height)
+    context_retention = _context_retention(candidate)
     sharpness = laplacian_variance_bgr(image)
 
     pixels = image.astype(np.float32, copy=False)
     channel_spread = float(
         np.mean(np.max(pixels, axis=2) - np.min(pixels, axis=2), dtype=np.float64)
     )
-    # BGR luminance approximation; only used to reject extreme exposure.
     mean_luma = float(
         np.mean(
             pixels[:, :, 0] * 0.114
@@ -73,9 +82,29 @@ def assess_training_crop(
         foundation_eligible=foundation_eligible,
         sharpness=sharpness,
         face_area=face_area,
+        face_area_ratio=face_area_ratio,
+        context_retention=context_retention,
         color_spread=channel_spread,
         mean_luma=mean_luma,
     )
+
+
+def _context_retention(candidate: FaceCandidate) -> float:
+    x1, y1, x2, y2 = candidate.box
+    frame_width, frame_height = candidate.frame
+    face_width = x2 - x1
+    face_height = y2 - y1
+    desired_x = face_width * _CONTEXT_RATIO
+    desired_y = face_height * _CONTEXT_RATIO
+    if desired_x <= 0 or desired_y <= 0:
+        return 0.0
+    ratios = (
+        x1 / desired_x,
+        (frame_width - x2) / desired_x,
+        y1 / desired_y,
+        (frame_height - y2) / desired_y,
+    )
+    return float(max(0.0, min(1.0, min(ratios))))
 
 
 def _require_bgr(image: np.ndarray) -> np.ndarray:

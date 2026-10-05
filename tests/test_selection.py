@@ -9,7 +9,7 @@ from immich2frigate.selection import VectorFace, select_adaptive_faces
 PERSON = "00000000-0000-4000-8000-000000000001"
 
 
-def vector_face(index: int, face, scene) -> VectorFace:
+def vector_face(index: int, face, scene=None) -> VectorFace:
     source = FaceCandidate(
         person_id=PERSON,
         face_id=f"00000000-0000-4000-8000-{index:012d}",
@@ -22,7 +22,7 @@ def vector_face(index: int, face, scene) -> VectorFace:
     return VectorFace(
         source=source,
         face_embedding=np.asarray(face, dtype=np.float32),
-        scene_embedding=np.asarray(scene, dtype=np.float32),
+        scene_embedding=None if scene is None else np.asarray(scene, dtype=np.float32),
     )
 
 
@@ -46,9 +46,9 @@ def test_diverse_distribution_expands_beyond_foundation_without_exceeding_cap():
         for i in range(1, 6)
     ]
     expansion = foundation + [
-        vector_face(6, [0.0, 1.0], [1.0, 0.0]),
-        vector_face(7, [-1.0, 0.0], [0.0, 1.0]),
-        vector_face(8, [0.0, -1.0], [-1.0, 0.0]),
+        vector_face(6, [0.7, 0.7], [1.0, 0.0]),
+        vector_face(7, [0.6, 0.8], [0.0, 1.0]),
+        vector_face(8, [0.8, 0.6], [-1.0, 0.0]),
     ]
 
     result = select_adaptive_faces(person, foundation, expansion, max_count=7)
@@ -88,3 +88,46 @@ def test_selector_rejects_invalid_vectors_and_duplicate_assets():
     )
     with pytest.raises(ValueError, match="one asset"):
         select_adaptive_faces(person, valid, valid + [duplicate])
+
+
+def test_isolated_face_outlier_is_not_rewarded_for_novelty():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    core = [
+        vector_face(i, [1.0, (i - 4) * 0.01], [1.0, i * 0.01])
+        for i in range(1, 9)
+    ]
+    outlier = vector_face(99, [-1.0, 0.0], [0.0, -1.0])
+
+    result = select_adaptive_faces(person, core[:6], core + [outlier], max_count=9, novelty_distance=0.001)
+
+    assert outlier.source.face_id not in {item.source.face_id for item in result}
+
+
+def test_foundation_avoids_near_duplicates_when_core_alternatives_exist():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    duplicates = [
+        vector_face(i, [1.0, i * 0.0001], [1.0, i * 0.0001])
+        for i in range(1, 6)
+    ]
+    alternatives = [
+        vector_face(10, [0.99, 0.12], [0.9, 0.4]),
+        vector_face(11, [0.98, -0.15], [0.8, -0.5]),
+        vector_face(12, [0.97, 0.20], [0.7, 0.7]),
+    ]
+    candidates = duplicates + alternatives
+
+    result = select_adaptive_faces(person, candidates, candidates, max_count=5)
+    selected = {item.source.face_id for item in result}
+
+    assert len(result) == 5
+    assert any(item.source.face_id in selected for item in alternatives)
+
+
+def test_missing_scene_embeddings_fall_back_to_face_novelty():
+    person = PersonRecord(PERSON, "Synthetic Person")
+    foundation = [vector_face(i, [1.0, i * 0.001], None) for i in range(1, 6)]
+    extra = vector_face(6, [0.8, 0.6], None)
+
+    result = select_adaptive_faces(person, foundation, foundation + [extra], max_count=6, novelty_distance=0.01)
+
+    assert extra.source.face_id in {item.source.face_id for item in result}

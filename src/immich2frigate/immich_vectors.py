@@ -23,7 +23,7 @@ class ImmichVectorStoreError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ImmichVectorStore:
-    """Fetch vectors for one already-known Immich person through PostgreSQL."""
+    """Fetch persisted vectors for one already-known Immich person."""
 
     database_url: str = field(repr=False)
     connect_timeout: int = 10
@@ -41,7 +41,7 @@ class ImmichVectorStore:
         person: PersonRecord,
         candidates: Iterable[FaceCandidate],
     ) -> list[VectorFace]:
-        """Return candidates that have both Immich face and scene embeddings."""
+        """Return candidates with face embeddings and optional scene embeddings."""
 
         _uuid(person.person_id, "person ID")
         candidate_by_face: dict[str, FaceCandidate] = {}
@@ -67,7 +67,9 @@ class ImmichVectorStore:
                 VectorFace(
                     source=candidate,
                     face_embedding=_parse_vector(face_vector, "face"),
-                    scene_embedding=_parse_vector(scene_vector, "scene"),
+                    scene_embedding=(
+                        None if scene_vector is None else _parse_vector(scene_vector, "scene")
+                    ),
                 )
             )
         results.sort(key=lambda item: (item.source.taken_at, item.source.asset_id, item.source.face_id or ""))
@@ -77,7 +79,7 @@ class ImmichVectorStore:
         self,
         person_id: str,
         face_ids: tuple[str, ...],
-    ) -> list[tuple[str, str, object, object]]:
+    ) -> list[tuple[str, str, object, object | None]]:
         try:
             import psycopg
         except ImportError as error:
@@ -91,7 +93,7 @@ class ImmichVectorStore:
                 ss.embedding::text
             FROM asset_face AS af
             INNER JOIN face_search AS fs ON fs."faceId" = af.id
-            INNER JOIN smart_search AS ss ON ss."assetId" = af."assetId"
+            LEFT JOIN smart_search AS ss ON ss."assetId" = af."assetId"
             WHERE af."personGroupId" = %s::uuid
               AND af.id = ANY(%s::uuid[])
               AND af."deletedAt" IS NULL
@@ -112,7 +114,7 @@ class ImmichVectorStore:
             name = type(error).__name__
             raise ImmichVectorStoreError(f"Immich vector read failed ({name})") from None
 
-        output: list[tuple[str, str, object, object]] = []
+        output: list[tuple[str, str, object, object | None]] = []
         for row in rows:
             if not isinstance(row, tuple) or len(row) != 4:
                 raise ImmichVectorStoreError("Immich vector query returned an unexpected row")

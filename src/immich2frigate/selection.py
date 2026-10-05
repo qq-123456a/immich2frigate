@@ -11,15 +11,19 @@ from .immich_client import FaceCandidate, PersonRecord
 FOUNDATION_COUNT = 5
 MAX_TRAINING_COUNT = 30
 DEFAULT_NOVELTY_DISTANCE = 0.08
+FOUNDATION_DUPLICATE_DISTANCE = 0.025
+_IDENTITY_MEDOID_MARGIN = 0.35
+_IDENTITY_NEIGHBOR_MARGIN = 0.20
+_ROBUST_SIGMA = 6.0
 
 
 @dataclass(frozen=True, slots=True)
 class VectorFace:
-    """One Immich face with the two vectors used for representative sampling."""
+    """One Immich face with the vectors used for representative sampling."""
 
     source: FaceCandidate = field(repr=False)
     face_embedding: np.ndarray = field(repr=False)
-    scene_embedding: np.ndarray = field(repr=False)
+    scene_embedding: np.ndarray | None = field(default=None, repr=False)
 
 
 def select_adaptive_faces(
@@ -31,13 +35,15 @@ def select_adaptive_faces(
     max_count: int = MAX_TRAINING_COUNT,
     novelty_distance: float = DEFAULT_NOVELTY_DISTANCE,
 ) -> list[VectorFace]:
-    """Select a strong foundation, then add only meaningfully novel samples.
+    """Select a safe identity core, then add only useful diversity.
 
-    Foundation candidates are expected to have passed the stricter image-quality
-    gate. The first five are chosen by centrality in Immich's face-vector space,
-    a conservative proxy for typical identity views. Expansion can use a wider
-    quality-approved pool, but a candidate is added only when its combined face
-    and scene vector is sufficiently different from every image already chosen.
+    Identity safety is derived only from Immich's persisted face embeddings. A
+    conservative robust envelope removes isolated or clearly off-cluster faces
+    before novelty is rewarded. Foundation faces come from that safe core and
+    prefer central samples while avoiding near-duplicates when alternatives
+    exist. Expansion uses face-vector novelty plus scene-vector novelty when a
+    Smart Search embedding is available; missing scene vectors fall back to
+    face-only distance rather than excluding the candidate.
     """
 
     if isinstance(foundation_count, bool) or not isinstance(foundation_count, int) or foundation_count < 1:
@@ -53,9 +59,7 @@ def select_adaptive_faces(
         raise ValueError("novelty_distance must be between 0 and 2")
 
     if len(foundation_candidates) < foundation_count:
-        raise ValueError(
-            f"at least {foundation_count} foundation-quality faces are required"
-        )
+        raise ValueError(f"at least {foundation_count} foundation-quality faces are required")
 
     expansion_by_face = {
         item.source.face_id: item for item in expansion_candidates if item.source.face_id is not None
@@ -67,49 +71,55 @@ def select_adaptive_faces(
     expansion = sorted(expansion_candidates, key=_candidate_key)
     foundation = sorted(foundation_candidates, key=_candidate_key)
     expansion_face = _validated_matrix(person, expansion, attr="face_embedding")
-    expansion_scene = _validated_matrix(person, expansion, attr="scene_embedding")
     foundation_face = _validated_matrix(person, foundation, attr="face_embedding")
-
     expansion_face_unit = _row_normalize(expansion_face)
-    expansion_scene_unit = _row_normalize(expansion_scene)
     foundation_face_unit = _row_normalize(foundation_face)
 
-    centroid = np.mean(foundation_face_unit, axis=0)
-    centroid_norm = float(np.linalg.norm(centroid))
-    if not np.isfinite(centroid_norm) or centroid_norm == 0:
-        centrality = np.zeros(len(foundation), dtype=np.float32)
-    else:
-        centroid = centroid / centroid_norm
-        centrality = foundation_face_unit @ centroid
+    expansion_safe = _identity_safe_mask(expansion_face_unit, minimum_keep=foundation_count)
+    safe_face_ids = {
+        expansion[index].source.face_id for index in range(len(expansion)) if expansion_safe[index]
+    }
+    safe_foundation = [item for item in foundation if item.source.face_id in safe_face_ids]
+    if len(safe_foundation) < foundation_count:
+        raise ValueError(
+            f"only {len(safe_foundation)} foundation-quality faces remain inside the Immich identity core; "
+            f"{foundation_count} are required"
+        )
 
-    foundation_indices = sorted(
-        range(len(foundation)),
-        key=lambda i: (-float(centrality[i]), _candidate_key(foundation[i])),
-    )[:foundation_count]
-    selected_faces = [foundation[index].source.face_id for index in foundation_indices]
+    safe_foundation_face = np.stack(
+        [foundation_face_unit[index] for index, item in enumerate(foundation) if item.source.face_id in safe_face_ids]
+    ).astype(np.float32, copy=False)
+    foundation_pair_distance = _combined_pair_distance(person, safe_foundation)
+    centrality_distance = _medoid_distances(safe_foundation_face)
+    density_distance = _local_density_distances(safe_foundation_face)
+    core_score = centrality_distance + density_distance
+    foundation_indices = _select_foundation_indices(
+        safe_foundation,
+        core_score,
+        foundation_pair_distance,
+        foundation_count,
+    )
+    selected_face_ids = [safe_foundation[index].source.face_id for index in foundation_indices]
 
-    index_by_face = {item.source.face_id: index for index, item in enumerate(expansion)}
-    selected = [index_by_face[face_id] for face_id in selected_faces]
+    safe_expansion = [item for index, item in enumerate(expansion) if expansion_safe[index]]
+    index_by_face = {item.source.face_id: index for index, item in enumerate(safe_expansion)}
+    selected = [index_by_face[face_id] for face_id in selected_face_ids]
     selected_set = set(selected)
+    pair_distance = _combined_pair_distance(person, safe_expansion)
 
-    combined = np.concatenate((expansion_face_unit, expansion_scene_unit), axis=1)
-    combined *= np.float32(1.0 / np.sqrt(2.0))
-
-    while len(selected) < min(max_count, len(expansion)):
-        selected_matrix = combined[selected]
+    while len(selected) < min(max_count, len(safe_expansion)):
         best_index: int | None = None
         best_distance = -1.0
 
-        for index in range(len(expansion)):
+        for index in range(len(safe_expansion)):
             if index in selected_set:
                 continue
-            nearest_similarity = float(np.max(selected_matrix @ combined[index]))
-            distance = 1.0 - nearest_similarity
-            if distance > best_distance + 1e-12:
+            nearest_distance = float(np.min(pair_distance[index, selected]))
+            if nearest_distance > best_distance + 1e-12:
                 best_index = index
-                best_distance = distance
-            elif abs(distance - best_distance) <= 1e-12 and best_index is not None:
-                if _candidate_key(expansion[index]) < _candidate_key(expansion[best_index]):
+                best_distance = nearest_distance
+            elif abs(nearest_distance - best_distance) <= 1e-12 and best_index is not None:
+                if _candidate_key(safe_expansion[index]) < _candidate_key(safe_expansion[best_index]):
                     best_index = index
 
         if best_index is None or best_distance < novelty_distance:
@@ -117,7 +127,118 @@ def select_adaptive_faces(
         selected.append(best_index)
         selected_set.add(best_index)
 
-    return [expansion[index] for index in selected]
+    return [safe_expansion[index] for index in selected]
+
+
+def _select_foundation_indices(
+    candidates: list[VectorFace],
+    centrality_distance: np.ndarray,
+    pair_distance: np.ndarray,
+    count: int,
+) -> list[int]:
+    order = sorted(
+        range(len(candidates)),
+        key=lambda i: (float(centrality_distance[i]), _candidate_key(candidates[i])),
+    )
+    selected: list[int] = []
+    for index in order:
+        if not selected or float(np.min(pair_distance[index, selected])) >= FOUNDATION_DUPLICATE_DISTANCE:
+            selected.append(index)
+            if len(selected) == count:
+                return selected
+
+    # A person may genuinely have only near-identical source photos. Keep the
+    # five-image safety floor by filling remaining slots with the most central
+    # candidates rather than failing or reaching for an outlier.
+    for index in order:
+        if index not in selected:
+            selected.append(index)
+            if len(selected) == count:
+                return selected
+    return selected
+
+
+def _identity_safe_mask(face_unit: np.ndarray, *, minimum_keep: int) -> np.ndarray:
+    size = face_unit.shape[0]
+    if size <= minimum_keep:
+        return np.ones(size, dtype=bool)
+
+    similarity = np.clip(face_unit @ face_unit.T, -1.0, 1.0)
+    medoid = int(np.argmax(np.mean(similarity, axis=1)))
+    medoid_distance = 1.0 - similarity[:, medoid]
+
+    without_self = similarity.copy()
+    np.fill_diagonal(without_self, -np.inf)
+    nearest_neighbor_distance = 1.0 - np.max(without_self, axis=1)
+
+    medoid_limit = _robust_upper_fence(medoid_distance, _IDENTITY_MEDOID_MARGIN)
+    neighbor_limit = _robust_upper_fence(nearest_neighbor_distance, _IDENTITY_NEIGHBOR_MARGIN)
+    safe = (medoid_distance <= medoid_limit) & (nearest_neighbor_distance <= neighbor_limit)
+
+    # Never manufacture confidence by relaxing the robust gate. If it leaves too
+    # few samples for the required foundation, the caller fails closed before a
+    # destructive Frigate rebuild.
+    return safe
+
+
+def _robust_upper_fence(values: np.ndarray, minimum_margin: float) -> float:
+    values = np.asarray(values, dtype=np.float64)
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    robust_sigma = 1.4826 * mad
+    return median + max(_ROBUST_SIGMA * robust_sigma, minimum_margin)
+
+
+def _medoid_distances(face_unit: np.ndarray) -> np.ndarray:
+    similarity = np.clip(face_unit @ face_unit.T, -1.0, 1.0)
+    medoid = int(np.argmax(np.mean(similarity, axis=1)))
+    return np.ascontiguousarray(1.0 - similarity[:, medoid], dtype=np.float32)
+
+
+def _local_density_distances(face_unit: np.ndarray) -> np.ndarray:
+    similarity = np.clip(face_unit @ face_unit.T, -1.0, 1.0)
+    np.fill_diagonal(similarity, -np.inf)
+    neighbor_count = min(5, max(1, face_unit.shape[0] - 1))
+    nearest = np.partition(similarity, -neighbor_count, axis=1)[:, -neighbor_count:]
+    return np.ascontiguousarray(1.0 - np.mean(nearest, axis=1), dtype=np.float32)
+
+
+def _combined_pair_distance(person: PersonRecord, candidates: list[VectorFace]) -> np.ndarray:
+    face = _row_normalize(_validated_matrix(person, candidates, attr="face_embedding"))
+    face_similarity = np.clip(face @ face.T, -1.0, 1.0)
+    similarity = face_similarity.copy()
+
+    scene_rows: list[np.ndarray] = []
+    scene_indices: list[int] = []
+    scene_dimension: int | None = None
+    for index, item in enumerate(candidates):
+        if item.scene_embedding is None:
+            continue
+        vector = np.asarray(item.scene_embedding, dtype=np.float32)
+        if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
+            raise ValueError("scene_embedding must be a finite one-dimensional vector")
+        norm = float(np.linalg.norm(vector))
+        if not np.isfinite(norm) or norm == 0:
+            raise ValueError("scene_embedding must have a finite, non-zero norm")
+        if scene_dimension is None:
+            scene_dimension = int(vector.size)
+        elif vector.size != scene_dimension:
+            raise ValueError("all available scene_embedding vectors must have the same dimension")
+        scene_rows.append(np.ascontiguousarray(vector))
+        scene_indices.append(index)
+
+    if scene_rows:
+        scene = _row_normalize(np.stack(scene_rows).astype(np.float32, copy=False))
+        scene_similarity = np.clip(scene @ scene.T, -1.0, 1.0)
+        for row, candidate_index in enumerate(scene_indices):
+            for column, other_index in enumerate(scene_indices):
+                similarity[candidate_index, other_index] = (
+                    face_similarity[candidate_index, other_index] + scene_similarity[row, column]
+                ) * 0.5
+
+    distance = 1.0 - similarity
+    np.fill_diagonal(distance, 0.0)
+    return np.ascontiguousarray(distance, dtype=np.float32)
 
 
 def _candidate_key(item: VectorFace) -> tuple[str, str, str]:

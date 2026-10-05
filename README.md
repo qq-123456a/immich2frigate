@@ -6,15 +6,17 @@ Build a compact Frigate face-training library from faces that Immich has already
 
 Immich is the teacher. Frigate is the student. The project does not add its own pose, expression, scene-label, or identity-confidence model.
 
-The first goal is a small, strong foundation rather than a fixed image quota. Each named person must have at least five foundation-quality images before a destructive rebuild is allowed. Foundation candidates must be clear, color, reasonably exposed, and large enough to be useful. The selector then prefers the most typical faces in Immich's own face-vector space.
+The first goal is a small, strong foundation rather than a fixed image quota. Each named person must have at least five foundation-quality images before a destructive rebuild is allowed. Foundation candidates must be clear, color, reasonably exposed, large enough to be useful.
 
-After the first five, extra images are optional. They are added only when the combined Immich face and smart-search vectors show meaningfully new coverage. Similar images from the same situation are intentionally skipped. Thirty images is an upper bound for the initial import, not a target that must be filled.
+The selector uses Immich's persisted face embeddings to build a conservative identity core before rewarding diversity. Isolated or clearly off-cluster faces are excluded from automatic training selection. Within that safe core, the first five prefer medoid-central, locally dense faces while avoiding near-duplicate foundation images when alternatives exist.
+
+After the first five, extra images are optional. They are added only when the Immich face vector, plus the Smart Search scene vector when available, shows meaningfully new coverage. Smart Search embeddings are helpful but not required: candidates without one fall back to face-vector novelty rather than disappearing from the pool. Thirty images is an upper bound for the initial import, not a target that must be filled.
 
 This follows Frigate's guidance to start with a few clear, front-facing photos and expand slowly with useful variation. Frigate also warns that diversity matters more than volume and that low-quality or overly similar training images can reduce accuracy.
 
 ## Rebuild flow
 
-Before any deletion, the program builds the complete adaptive plan for every named person, verifies that each person has at least five foundation-quality images, verifies Frigate 0.18.0/large, and backs up the registered face library. It then clears registered faces, uploads each person's selected adaptive set, verifies the exact final count for each person, and persists the private identity registry.
+Before any deletion, the program builds the complete adaptive plan for every named person, verifies that each person has at least five safe foundation-quality images, verifies Frigate 0.18.0/large, and backs up the registered face library. It then clears registered faces, uploads each person's selected adaptive set, verifies the exact final count for each person, and persists the private identity registry.
 
 Runtime settings come only from environment variables: IMMICH_URL, IMMICH_API_KEY, IMMICH_DATABASE_URL using a dedicated read-only PostgreSQL user, and FRIGATE_URL.
 
