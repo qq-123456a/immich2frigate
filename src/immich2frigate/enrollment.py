@@ -277,6 +277,9 @@ def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, obje
 
     root = Path(backup_dir)
     root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or any(root.iterdir()):
+        raise ValueError("backup directory must be an empty, private directory")
+    root.chmod(0o700)
     inventory = frigate.inventory()
     manifest: dict[str, object] = {
         "faces": {},
@@ -285,11 +288,13 @@ def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, obje
     for name, filenames in inventory.items():
         face_dir = root / _safe_backup_component(name)
         face_dir.mkdir(parents=True, exist_ok=True)
+        face_dir.chmod(0o700)
         rows = []
         for filename in filenames:
             body = frigate.face_image_bytes(name, filename)
             path = face_dir / _safe_backup_component(filename)
             path.write_bytes(body)
+            path.chmod(0o600)
             rows.append(
                 {
                     "filename": filename,
@@ -304,6 +309,7 @@ def backup_registered_library(frigate, backup_dir: str | Path) -> dict[str, obje
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+    (root / "manifest.json").chmod(0o600)
     return manifest
 
 
@@ -311,6 +317,7 @@ def reset_registered_library(
     frigate,
     *,
     expected_inventory: Mapping[str, Sequence[str]] | None = None,
+    on_delete=None,
 ) -> int:
     """Delete all registered face images from a freshly read inventory."""
 
@@ -326,8 +333,14 @@ def reset_registered_library(
     for name, filenames in inventory.items():
         for offset in range(0, len(filenames), 512):
             batch = list(filenames[offset : offset + 512])
+            if on_delete is not None:
+                on_delete(name, batch, "deleting")
             frigate.delete_faces(name, batch)
+            if set(batch) & set(frigate.inventory().get(name, ())):
+                raise RuntimeError("Frigate face reset did not produce an empty registered library")
             deleted += len(batch)
+            if on_delete is not None:
+                on_delete(name, batch, "deleted")
     remaining = frigate.inventory()
     nonempty = {name: files for name, files in remaining.items() if files}
     if nonempty:

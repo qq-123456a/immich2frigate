@@ -1,11 +1,12 @@
 services:
-  immich2frigate-sync:
+  immich2frigate-sync: &runtime
     build: .
     container_name: immich2frigate-sync
     restart: unless-stopped
     env_file: .env
     environment:
       IMMICH_URL: http://immich25_server:2283
+      IMMICH_ML_URL: http://immich25_machine_learning:3003
       FRIGATE_URL: http://frigate:5000
     command:
       - sync
@@ -15,6 +16,9 @@ services:
       - /var/lib/immich2frigate/sync-state.json
       - --loop-seconds
       - "21600"
+      - --propose-only
+      - --plan-dir
+      - /var/lib/immich2frigate/proposals
     volumes:
       - type: bind
         source: ${IMMICH2FRIGATE_DATA_DIR:?Set IMMICH2FRIGATE_DATA_DIR in .env}
@@ -22,9 +26,30 @@ services:
       - type: bind
         source: ${IMMICH2FRIGATE_BACKUP_DIR:?Set IMMICH2FRIGATE_BACKUP_DIR in .env}
         target: /backups
+      - type: bind
+        source: ${FRIGATE_MODELS_DIR:?Set FRIGATE_MODELS_DIR in .env}
+        target: /models/frigate
+        read_only: true
+      - type: bind
+        source: ${IMMICH2FRIGATE_QUALITY_MODELS_DIR:?Set IMMICH2FRIGATE_QUALITY_MODELS_DIR in .env}
+        target: /models/quality
+        read_only: true
     networks:
       - immich
       - frigate
+
+  immich2frigate-validate:
+    <<: *runtime
+    container_name: immich2frigate-validate
+    command:
+      - validate
+      - --registry
+      - /var/lib/immich2frigate/identity-registry.json
+      - --state
+      - /var/lib/immich2frigate/sync-state.json
+      - --data-dir
+      - /var/lib/immich2frigate/validation
+      - --watch
 
 networks:
   immich:

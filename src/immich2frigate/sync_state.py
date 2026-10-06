@@ -12,6 +12,24 @@ from uuid import UUID
 _VERSION = 2
 
 
+def write_json(path: str | Path, value: dict) -> None:
+    """Commit private state or a journal atomically, including a durable flush."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temporary = stream.name
+            os.chmod(temporary, 0o600)
+            stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class SyncState:
     def __init__(self, path: str | Path, *, immich_origin: str, frigate_origin: str, years: int = 100):
         if isinstance(years, bool) or not isinstance(years, int) or not 1 <= years <= 100:
@@ -41,19 +59,7 @@ class SyncState:
             "roster": self.roster,
             "pending": self.pending,
         }
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w", encoding="utf-8", dir=self.path.parent, delete=False
-            ) as stream:
-                temporary = stream.name
-                stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if temporary and os.path.exists(temporary):
-                os.unlink(temporary)
+        write_json(self.path, payload)
 
     def _load(self) -> None:
         try:

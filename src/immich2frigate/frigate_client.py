@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
@@ -106,6 +107,24 @@ class FrigateReadOnlyClient:
         except UnicodeDecodeError:
             raise FrigateApiError("Frigate version response was not valid UTF-8") from None
 
+    def face_recognition_profile(self) -> dict[str, object]:
+        """Read only the face-recognition settings that affect label decisions."""
+        try:
+            config = json.loads(self._get("/api/config"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise FrigateApiError("Frigate config response was not valid JSON") from None
+        return parse_face_recognition_profile(config)
+
+    def raw_config_bytes(self) -> bytes:
+        """Decode Frigate 0.18's JSON-string response for a private YAML backup."""
+        try:
+            config = json.loads(self._get("/api/config/raw"))
+            if not isinstance(config, str) or not config.strip():
+                raise ValueError
+            return config.encode("utf-8")
+        except (ValueError, UnicodeError):
+            raise FrigateApiError("Frigate raw config response was invalid") from None
+
     def _require_admin(self) -> None:
         try:
             profile = json.loads(self._get("/api/profile"))
@@ -119,16 +138,9 @@ class FrigateReadOnlyClient:
         """Require the inspected version, enabled recognition, large model, and admin role."""
         version = self.version()
         self._require_admin()
-        try:
-            config = json.loads(self._get("/api/config"))
-            face_config = config["face_recognition"]
-            model_size = face_config["model_size"]
-            enabled = face_config["enabled"]
-        except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError):
-            raise FrigateApiError("Frigate config did not contain face-recognition settings") from None
-        if not isinstance(model_size, str):
-            raise FrigateApiError("Frigate face model size was not a string")
-        if enabled is not True:
+        face_profile = self.face_recognition_profile()
+        model_size = face_profile["model_size"]
+        if face_profile["enabled"] is not True:
             raise FrigateApiError("Frigate face recognition is not enabled")
         try:
             require_target(version, model_size)
@@ -211,3 +223,24 @@ def _matches_image_signature(filename: str, body: bytes) -> bool:
     if suffix == "webp":
         return len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WEBP"
     return False
+
+
+def parse_face_recognition_profile(config: object) -> dict[str, object]:
+    """Extract and validate the non-secret Frigate face settings used by validation."""
+    try:
+        face = config["face_recognition"]
+        enabled = face["enabled"]
+        model_size = face["model_size"]
+        threshold = face["recognition_threshold"]
+        min_faces = face["min_faces"]
+    except (KeyError, TypeError):
+        raise FrigateApiError("Frigate config did not contain face-recognition settings") from None
+    if not isinstance(enabled, bool) or not isinstance(model_size, str) or not model_size:
+        raise FrigateApiError("Frigate face-recognition profile was invalid")
+    if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+            or not math.isfinite(threshold) or not 0 <= threshold <= 1):
+        raise FrigateApiError("Frigate face-recognition profile was invalid")
+    if isinstance(min_faces, bool) or not isinstance(min_faces, int) or min_faces < 1:
+        raise FrigateApiError("Frigate face-recognition profile was invalid")
+    return {"enabled": enabled, "model_size": model_size,
+            "recognition_threshold": float(threshold), "min_faces": min_faces}
