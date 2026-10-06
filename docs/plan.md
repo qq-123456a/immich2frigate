@@ -1,48 +1,32 @@
-# Implementation plan
+# Operating plan
 
-## 1. Immich source of truth
+## Locked foundation
 
-- Use Immich person assignment as the candidate boundary.
-- Read persisted `face_search` embeddings through a dedicated read-only PostgreSQL account.
-- Read `smart_search` embeddings when present, but do not require them for a face to remain eligible.
-- Do not add project-owned pose, expression, scene-label, or identity-confidence models.
-- Force PostgreSQL transactions read-only and keep credentials runtime-only.
+- Keep the existing three-person Immich/Frigate roster fixed; do not select new people.
+- `prepare` scans up to 700 Immich face vectors per roster member. Apply Immich identity-safe filtering to the full pool before preview, quality scoring, or Frigate ranking. Ignore scene vectors.
+- Require five strict, Teacher-confirmed candidates per person before producing a frozen rebuild plan. Strict profile: pinned Frigate 0.18 large/ArcFace, YuNet and LBF readback; target-face IoU ≥0.5; stored side ≥80 px; sharpness ≥250; color/exposure gates; eDifFIQA ≥0.30; absolute yaw/pitch/roll ≤15°; cross-person raw-cosine margin ≥0.10; same-source/checksum and cosine ≥0.98 duplicates rejected.
+- Freeze upload bytes, stored-WebP bytes, embeddings, metrics, roster, service target, source hashes, model profile, and inventory. A changed source or runtime invalidates the plan.
 
-## 2. Foundation-first selection
+## Deployment and rollback
 
-- Require at least 5 foundation-quality images per named person before destructive reset.
-- Apply Frigate-aligned non-ML quality gates: clear enough by Laplacian sharpness, color rather than effectively grayscale, reasonable exposure, and sufficient face area. Face-area ratio and surrounding crop context are recorded as diagnostics rather than hard rejection rules.
-- Build a conservative identity-safe pool from Immich's persisted face embeddings before rewarding novelty. Use a robust medoid envelope and nearest-neighbor isolation check only to reject clear intra-person outliers; do not claim this is a second identity classifier.
-- Among safe foundation-quality candidates, prefer medoid-central and locally dense faces.
-- Avoid near-duplicate foundation faces when safe alternatives exist, but keep the five-image minimum by falling back to the most central safe candidates when the source library is genuinely repetitive.
+1. From the immich2frigate repository root, build with `docker compose -f compose.runtime.yaml build`, then stop the scheduled sync with `docker compose -f compose.runtime.yaml stop immich2frigate-sync`. Building does not touch production data. Keep model assets read-only; mount the root of Frigate `model_cache` at `/models/frigate` with its `facedet/` child intact, and verify pinned hashes through profile startup.
+2. Run `docker compose -f compose.runtime.yaml run --rm --no-deps immich2frigate-sync prepare --registry /var/lib/immich2frigate/identity-registry.json --state /var/lib/immich2frigate/sync-state.json --plan-dir /var/lib/immich2frigate/plans/foundation`; `prepare` creates the private plan directory. Review the full frozen plan and ensure all three identities have five eligible images.
+3. Run `docker compose -f compose.runtime.yaml run --rm --no-deps immich2frigate-sync rebuild --registry /var/lib/immich2frigate/identity-registry.json --state /var/lib/immich2frigate/sync-state.json --plan-dir /var/lib/immich2frigate/plans/foundation --backup-dir /backups/foundation-unique-id --confirm-reset`. Rebuild writes sequentially and validates the exact stored crop and Teacher result after every registration.
+4. In Frigate's existing runtime directory, change only `recognition_threshold` to `0.95` and `min_faces` to `3`, then run `docker compose restart frigate` once. From the immich2frigate repository root, run `docker compose -f compose.runtime.yaml up -d`.
+5. Start the event validation watcher. Wait for at least 20 confirmed calibration events per person, zero conflicts, and agreement coverage ≥0.90. Only then generate an expansion proposal.
 
-## 3. Adaptive expansion
+Rollback stops Frigate and restores its raw face-library files, sync state, identity registry, and Frigate config from one matching backup. Start Frigate after restore. Do not use registration API calls to rollback.
 
-- Five images are the baseline, not a quota floor for every available photo.
-- After the first five, consider only candidates that remain inside the conservative Immich face-vector identity core.
-- Add an image only when it contributes sufficient novelty relative to the selected set.
-- Use combined face + Smart Search scene distance when both candidates have scene embeddings; otherwise fall back to face-vector distance.
-- Stop naturally when remaining images are too similar, even if the person has 20, 30, or hundreds of source photos.
-- Cap the initial import at 30 images per person.
-- A person with many near-duplicate photos may therefore receive only 5-7 initial training images.
+## Validation and expansion
 
-## 4. First-phase rebuild gate
+- The Teacher is Immich's own face-recognition endpoint and indexed embeddings with source asset/checksum exclusion. Its neutral-border PNG preprocessing is versioned at 50% padding and value 127. Keep the Immich detector/recognizer threshold at 0.7; never lower it to force confirmation.
+- Archive face crops privately by event. Calibration rows are used to simulate Frigate prototypes; holdout rows are never read for candidate scoring and never become Immich candidate sources.
+- Propose at most two new Immich images per person per batch, never exceeding 30 registered images. Apply source uniqueness, strict quality, the 0.10 cross-person margin, Frigate class-center/density rank, and independent Teacher confirmation.
+- Simulate all three prototypes together. Freeze only a batch that strictly improves calibration coverage without increasing conflicts. An empty proposal is a no-op.
+- After apply, mark the batch pending. It becomes accepted only when all three people pass a fresh holdout gate with ≥20 confirmed events, zero conflicts, and ≥0.90 agreement. Any new conflict withdraws only the batch's added Frigate images, restores the previous source ledger and profile, and sets a new validation epoch at the withdrawal time; collect fresh events before proposing or accepting another batch.
 
-Before deleting any registered Frigate face data, rank named Immich people by distinct image count, lock the top three, and build the complete adaptive plan for those three. Verify each has five safe foundation-quality images, verify Frigate 0.18.0/large/admin, and back up all registered files. Keep the three-person roster stable for incremental sync; do not rerank during normal runs.
+## Release and privacy gates
 
-After the gate passes, delete registered faces from a fresh inventory, verify the library is empty, upload sequentially, stop immediately on ambiguous remote writes, and verify each person's exact adaptive target count.
-
-## 5. Closed-loop validation
-
-- Group observations by Frigate person track rather than every frame.
-- Keep a holdout benchmark that never participates in training.
-- Send selected CCTV faces through Immich's own recognition path.
-- Add clear lower-performing or disagreement samples only when they add new useful conditions.
-- Keep expansion gradual to avoid over-fitting.
-
-## 6. Release gates
-
-- Public tests use synthetic data only.
-- CI passes on Python 3.12.
-- No secrets, real face data, embeddings, mappings, manifests, reports, or backups enter Git.
-- Production reset still requires runtime access to Immich API, read-only Immich PostgreSQL, and Frigate internal API.
+- Python 3.12 CI runs synthetic tests with `.[compat,vision,database,curator,dev]`.
+- No production names/IDs, face images, vectors, archives, reports, frozen plans, model weights, credentials, or backups enter Git.
+- See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for pinned model sources and hashes. Weight license terms must be verified upstream before any redistribution.

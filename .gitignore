@@ -19,6 +19,11 @@ exports/
 manifests/
 reports/
 backups/
+models/
+proposals/
+plans/
+withdrawals/
+validation/
 *.sqlite
 *.sqlite3
 *.db

@@ -7,7 +7,8 @@ RUN python -m pip install --no-cache-dir \
     "pillow>=12.1.0" \
     "requests>=2.32.5" \
     "psycopg[binary]>=3.2" \
-    "opencv-contrib-python-headless>=4.10,<5"
+    "opencv-contrib-python-headless==4.11.0.86" \
+    "onnxruntime==1.24.4"
 
 COPY pyproject.toml README.md ./
 COPY src ./src

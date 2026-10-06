@@ -23,6 +23,7 @@ class RegisteredFace:
     stored_webp: bytes = field(repr=False)
     crop_bgr: np.ndarray = field(repr=False)
     box: tuple[int, int, int, int]
+    accepted_detection_count: int = 1
 
 
 def prepare_registered_face(image_bgr: np.ndarray, detector) -> RegisteredFace | None:
@@ -51,16 +52,36 @@ def prepare_registered_face(image_bgr: np.ndarray, detector) -> RegisteredFace |
 
     largest_box: tuple[int, int, int, int] | None = None
     largest_area = -1
+    accepted_detection_count = 0
     for row in rows:
         row = np.asarray(row)
-        if row.ndim != 1 or row.size < 5 or float(row[-1]) < _REGISTER_THRESHOLD:
+        if row.ndim != 1 or row.size < 5:
             continue
-        raw_box = row[:4].astype(np.uint16)
-        x = int(max(raw_box[0], 0) / scale)
-        y = int(max(raw_box[1], 0) / scale)
-        box_width = int(raw_box[2] / scale)
-        box_height = int(raw_box[3] / scale)
+        values = np.asarray([*row[:4], row[-1]], dtype=np.float64)
+        if not np.isfinite(values).all() or values[4] < _REGISTER_THRESHOLD:
+            continue
+        raw_x, raw_y, raw_width, raw_height = values[:4]
+        if (
+            raw_x < 0
+            or raw_y < 0
+            or raw_width <= 0
+            or raw_height <= 0
+            or max(raw_x, raw_y, raw_width, raw_height) > np.iinfo(np.uint16).max
+            or raw_x + raw_width > detect_image.shape[1]
+            or raw_y + raw_height > detect_image.shape[0]
+        ):
+            # Frigate still considers this face when choosing its largest box.
+            # Skipping it could simulate a different, smaller target face.
+            return None
+        # Frigate truncates detector coordinates to uint16 before scaling.
+        x = int(int(raw_x) / scale)
+        y = int(int(raw_y) / scale)
+        box_width = int(int(raw_width) / scale)
+        box_height = int(int(raw_height) / scale)
         box = (x, y, x + box_width, y + box_height)
+        if box[2] > width or box[3] > height or box_width <= 0 or box_height <= 0:
+            continue
+        accepted_detection_count += 1
         area = (box[2] - box[0] + 1) * (box[3] - box[1] + 1)
         if largest_box is None or area > largest_area:
             largest_box = box
@@ -79,6 +100,7 @@ def prepare_registered_face(image_bgr: np.ndarray, detector) -> RegisteredFace |
         stored_webp=encoded.tobytes(),
         crop_bgr=np.ascontiguousarray(crop),
         box=largest_box,
+        accepted_detection_count=accepted_detection_count,
     )
 
 

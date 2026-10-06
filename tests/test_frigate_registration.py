@@ -3,14 +3,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-cv2 = pytest.importorskip("cv2")
-
 from immich2frigate.frigate_registration import (
     align_face_bgr,
     laplacian_variance_bgr,
     prepare_registered_face,
     prepare_registered_upload,
 )
+
+cv2 = pytest.importorskip("cv2")
 
 
 class FakeYuNet:
@@ -45,6 +45,21 @@ def test_registration_scales_detects_largest_and_encodes_quality_100_webp():
     assert decoded.shape == result.crop_bgr.shape
 
 
+def test_registration_truncates_yunet_coordinates_before_non_integral_scale():
+    image = np.zeros((1400, 1301, 3), dtype=np.uint8)
+    detector = FakeYuNet(np.array([row(10.9, 20.8, 100.9, 60.1)]))
+
+    result = prepare_registered_face(image, detector)
+
+    scale = 1080 / 1400
+    assert detector.input_size == (int(scale * 1301), 1080)
+    assert result.box == (
+        int(10 / scale), int(20 / scale),
+        int(10 / scale) + int(100 / scale),
+        int(20 / scale) + int(60 / scale),
+    )
+
+
 def test_registration_uses_first_face_on_equal_area_and_ignores_low_confidence():
     image = np.zeros((200, 300, 3), dtype=np.uint8)
     detector = FakeYuNet(
@@ -69,6 +84,12 @@ def test_final_upload_bytes_are_decoded_before_resimulation():
     with pytest.raises(ValueError, match="decoded"):
         prepare_registered_upload(b"synthetic-not-an-image", detector)
     assert prepare_registered_upload(encoded.tobytes(), FakeYuNet(None)) is None
+
+
+def test_invalid_larger_face_cannot_be_skipped_in_favor_of_valid_target():
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    detector = FakeYuNet(np.array([row(-5, 0, 100, 100), row(10, 10, 40, 40)]))
+    assert prepare_registered_face(image, detector) is None
 
 
 class FakeLandmarks:

@@ -27,6 +27,11 @@ exports/
 manifests/
 reports/
 backups/
+models/
+plans/
+proposals/
+validation/
+withdrawals/
 .venv/
 dist/
 build/
