@@ -241,8 +241,9 @@ def scan_person(
     pipeline: FacePipeline,
     *,
     years: int = 100,
+    candidate_limit: int | None = None,
 ) -> list[PreparedCandidate]:
-    """Read, prepare, and score the complete available person candidate set."""
+    """Read, prepare, and score a person candidate set."""
     embedded = vectors.candidates_for_person(person, years=years, include_face_ids=())
     loaded_count = len(embedded)
     from .enrollment import _one_face_per_asset
@@ -252,13 +253,20 @@ def scan_person(
     safe = _identity_safe_mask(matrix, minimum_keep=5)
     embedded = [item for index, item in enumerate(embedded) if safe[index]]
     identity_safe_count = len(embedded)
-    if len(embedded) < 5:
+    if candidate_limit is None and len(embedded) < 5:
         raise ValueError(f"fewer than five Immich identity-safe candidates remain for {person.name!r}")
+    if candidate_limit is not None:
+        if isinstance(candidate_limit, bool) or not isinstance(candidate_limit, int) or candidate_limit < 5:
+            raise ValueError("candidate_limit must be an integer of at least five")
+        if len(embedded) > candidate_limit:
+            # The vector query is time-ordered; spread image checks across its full range.
+            indexes = np.linspace(0, len(embedded) - 1, candidate_limit, dtype=np.intp)
+            embedded = [embedded[index] for index in indexes]
     prepared: list[PreparedCandidate] = []
     rejected: dict[str, int] = {}
     invalid_crop = 0
     eligible = 0
-    print(json.dumps({"preparation": "scan_progress", "processed": 0, "loaded": loaded_count, "identity_safe": identity_safe_count}, separators=(",", ":")), flush=True)
+    print(json.dumps({"preparation": "scan_progress", "processed": 0, "loaded": loaded_count, "identity_safe": identity_safe_count, "preview_candidates": len(embedded)}, separators=(",", ":")), flush=True)
     for processed, source in enumerate(embedded, 1):
         try:
             upload = prepare_candidate_upload(source.source, immich.preview(source.source.asset_id))
@@ -317,7 +325,7 @@ def select_foundation(
         chosen = [next(item for item in pool if item.source.source.face_id == row.candidate.source.face_id) for row in selected[:count]]
         rejected = next((item for item in chosen if teacher is not None and not teacher(item)), None)
         if rejected is None:
-            if references_by_person is not None and count == 5:
+            if references_by_person is not None and count <= 5:
                 margin = _prototype_margin(chosen, references_by_person)
                 if margin is None or margin < MIN_CROSS_PERSON_MARGIN:
                     weakest = min(
@@ -498,7 +506,7 @@ def _prototype_margin(
     selected: Sequence[PreparedCandidate],
     references_by_person: Mapping[str, Sequence[PreparedCandidate]],
 ) -> float | None:
-    if len(selected) != 5:
+    if not 1 <= len(selected) <= 5:
         return None
     sources = [item.source.source for item in selected]
     person_id = sources[0].person_id

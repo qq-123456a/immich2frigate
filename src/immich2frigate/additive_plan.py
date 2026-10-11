@@ -15,6 +15,7 @@ import numpy as np
 
 from .face_pipeline import (
     MIN_CROSS_PERSON_MARGIN,
+    _prototype_margin,
     cross_person_margin,
     scan_person,
     select_foundation,
@@ -33,6 +34,8 @@ from .frozen_plan import (
 )
 from .identity_registry import validate_frigate_name
 from .sync_state import write_json
+
+_MAX_PREVIEW_CANDIDATES_PER_PERSON = 200
 
 
 def additions_needed(current_count: int, max_images: int) -> int:
@@ -191,6 +194,8 @@ def prepare_additive(
         "profile": pipeline.profile.metadata(),
         "teacher": teacher.profile(),
         "max_images": max_images,
+        "candidate_preview_limit_per_person": _MAX_PREVIEW_CANDIDATES_PER_PERSON,
+        "prototype_margin_version": 1,
         "target_people": [
             {"person_id": person.person_id, "name": person.name,
              "frigate_name": labels[person.person_id],
@@ -211,7 +216,10 @@ def prepare_additive(
     files: dict[str, bytes] = {}
     if selected_people:
         pools = {
-            person.person_id: scan_person(immich, vectors, person, pipeline, years=state.years)
+            person.person_id: scan_person(
+                immich, vectors, person, pipeline, years=state.years,
+                candidate_limit=_MAX_PREVIEW_CANDIDATES_PER_PERSON,
+            )
             for person in people if person.person_id in reference_ids
         }
         existing_embeddings: dict[str, list[np.ndarray]] = {}
@@ -260,6 +268,25 @@ def prepare_additive(
             selected = _select_additions(
                 person, pools[person.person_id], additions, confirm, pools
             )
+            if len(selected) < additions:
+                manifest["skipped"].append({
+                    "name": person.name,
+                    "frigate_name": labels[person.person_id],
+                    "current_count": current_counts[person.person_id],
+                    "reason": "candidate_shortfall",
+                    "planned_additions": len(selected),
+                })
+            if not selected:
+                continue
+            prototype_margins = [
+                _prototype_margin(selected[index:index + 5], pools)
+                for index in range(0, len(selected), 5)
+            ]
+            if any(
+                margin is None or margin < MIN_CROSS_PERSON_MARGIN
+                for margin in prototype_margins
+            ):
+                raise ValueError("a selected cohort failed the cross-person prototype margin")
             for candidate in selected:
                 source = candidate.source.source
                 margin = cross_person_margin(candidate, pools)
@@ -287,6 +314,7 @@ def prepare_additive(
                 "name": person.name,
                 "frigate_name": labels[person.person_id],
                 "existing_count": current_counts[person.person_id],
+                "prototype_margins": prototype_margins,
                 "images": rows,
             })
 
@@ -316,6 +344,18 @@ def load_additive_plan(root: str | Path) -> tuple[Path, dict]:
         raise ValueError("frozen additive plan has an invalid roster")
     max_images = plan.get("max_images")
     additions_needed(0, max_images)
+    preview_limit = plan.get("candidate_preview_limit_per_person")
+    if preview_limit is not None and (
+        isinstance(preview_limit, bool) or not isinstance(preview_limit, int) or preview_limit < 5
+    ):
+        raise ValueError("frozen additive preview limit is invalid")
+    prototype_margin_version = plan.get("prototype_margin_version")
+    if prototype_margin_version is not None and (
+        isinstance(prototype_margin_version, bool)
+        or not isinstance(prototype_margin_version, int)
+        or prototype_margin_version != 1
+    ):
+        raise ValueError("frozen additive prototype margin version is invalid")
     roster = plan.get("immich_roster")
     if not isinstance(roster, list):
         raise ValueError("frozen additive source roster is invalid")
@@ -373,9 +413,22 @@ def load_additive_plan(root: str | Path) -> tuple[Path, dict]:
             isinstance(existing_count, bool)
             or not isinstance(existing_count, int)
             or existing_count >= max_images
-            or len(person["images"]) != additions_needed(existing_count, max_images)
+            or not 1 <= len(person["images"]) <= additions_needed(existing_count, max_images)
         ):
             raise ValueError("frozen additive plan exceeds the requested image limit")
+        prototype_margins = person.get("prototype_margins")
+        if prototype_margin_version == 1 and (
+            not isinstance(prototype_margins, list)
+            or len(prototype_margins) != (len(person["images"]) + 4) // 5
+            or any(
+                isinstance(margin, bool)
+                or not isinstance(margin, (int, float))
+                or not np.isfinite(margin)
+                or margin < MIN_CROSS_PERSON_MARGIN
+                for margin in prototype_margins
+            )
+        ):
+            raise ValueError("frozen additive plan failed the cross-person prototype margin")
         inventory = plan["inventory"]
         if len(inventory.get(label, ())) != existing_count:
             raise ValueError("frozen additive inventory count changed")
@@ -400,24 +453,50 @@ def load_additive_plan(root: str | Path) -> tuple[Path, dict]:
             embedding = np.asarray(image["embedding"], dtype=np.float32)
             if embedding.shape != (512,) or not np.isfinite(embedding).all() or np.linalg.norm(embedding) == 0:
                 raise ValueError("frozen additive embedding is invalid")
-    expected_ids = {
-        _uuid(target["person_id"])
-        for target in targets
-        if additions_needed(target["current_count"], max_images)
-    }
-    if seen_ids != expected_ids:
-        raise ValueError("frozen additive plan omits a target below its image limit")
+    if any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("name"), str)
+        or not isinstance(row.get("frigate_name"), str)
+        or isinstance(row.get("current_count"), bool)
+        or not isinstance(row.get("current_count"), int)
+        for row in plan["skipped"]
+    ):
+        raise ValueError("frozen additive skipped target is invalid")
     skipped_by_label = {row["frigate_name"].casefold(): row for row in plan["skipped"]}
+    if len(skipped_by_label) != len(plan["skipped"]):
+        raise ValueError("frozen additive plan contains duplicate skipped targets")
+    people_by_id = {_uuid(row["person_id"]): row for row in plan["people"]}
     for target in targets:
-        if additions_needed(target["current_count"], max_images):
-            continue
         skipped = skipped_by_label.get(target["frigate_name"].casefold())
-        if (
-            skipped is None
-            or skipped.get("name") != target["name"]
-            or skipped.get("current_count") != target["current_count"]
-        ):
-            raise ValueError("frozen additive skipped target is inconsistent")
+        person = people_by_id.get(_uuid(target["person_id"]))
+        needed = additions_needed(target["current_count"], max_images)
+        planned = len(person["images"]) if person is not None else 0
+        if needed == 0:
+            expected_reason = "over_limit" if target["current_count"] > max_images else "at_limit"
+            if (
+                person is not None
+                or skipped is None
+                or skipped.get("name") != target["name"]
+                or skipped.get("current_count") != target["current_count"]
+                or skipped.get("reason") != expected_reason
+            ):
+                raise ValueError("frozen additive skipped target is inconsistent")
+        elif planned < needed:
+            planned_additions = skipped.get("planned_additions") if skipped is not None else None
+            if (
+                skipped is None
+                or skipped.get("name") != target["name"]
+                or skipped.get("current_count") != target["current_count"]
+                or skipped.get("reason") != "candidate_shortfall"
+                or isinstance(planned_additions, bool)
+                or not isinstance(planned_additions, int)
+                or planned_additions != planned
+            ):
+                raise ValueError("frozen additive candidate shortfall is inconsistent")
+        elif skipped is not None:
+            raise ValueError("frozen additive plan marks a complete target as skipped")
+    if any(name not in {row["frigate_name"].casefold() for row in targets} for name in skipped_by_label):
+        raise ValueError("frozen additive plan has an unknown skipped target")
     for name, hashes in plan.get("existing_face_hashes", {}).items():
         if name not in plan["inventory"] or not isinstance(hashes, dict):
             raise ValueError("frozen existing-face references are invalid")
@@ -510,7 +589,8 @@ def apply_additive_plan(
     expected = {name: sorted(files) for name, files in sorted(expected.items())}
     actual = _inventory(frigate)
     if actual != expected or any(
-        len(actual.get(person["frigate_name"], ())) != plan["max_images"]
+        len(actual.get(person["frigate_name"], ()))
+        != person["existing_count"] + len(person["images"])
         for person in plan["people"]
     ):
         raise RuntimeError("final face inventory differs from the append-only plan")
@@ -604,13 +684,22 @@ def _select_additions(person, candidates, count, teacher, references_by_person):
     remaining = list(candidates)
     selected = []
     while len(selected) < count:
-        batch = select_foundation(
-            person, remaining, teacher=teacher, references_by_person=references_by_person,
-            count=min(5, count - len(selected)),
-        )
-        picked = batch[:count - len(selected)]
+        desired = min(5, count - len(selected))
+        picked = []
+        for batch_count in range(desired, 0, -1):
+            try:
+                batch = select_foundation(
+                    person, remaining, teacher=teacher,
+                    references_by_person=references_by_person, count=batch_count,
+                )
+            except ValueError as error:
+                if not str(error).startswith(("fewer than ", "at least ")):
+                    raise
+                continue
+            picked = batch[:desired]
+            break
         if not picked:
-            raise ValueError(f"no distinct strict candidates remain for {person.name!r}")
+            return selected
         selected.extend(picked)
         chosen_ids = {item.source.source.face_id for item in picked}
         chosen_vectors = [_unit(item.face.embedding) for item in picked]
@@ -619,6 +708,8 @@ def _select_additions(person, candidates, count, teacher, references_by_person):
             if item.source.source.face_id not in chosen_ids
             and not any(float(_unit(item.face.embedding) @ vector) >= 0.98 for vector in chosen_vectors)
         ]
+        if len(picked) < desired:
+            return selected
     return selected
 
 
