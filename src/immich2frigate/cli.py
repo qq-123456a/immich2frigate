@@ -20,15 +20,19 @@ from .sync_state import SyncState, write_json
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="immich2frigate")
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("prepare", "rebuild", "sync", "validate"):
+    for command in ("prepare", "rebuild", "sync", "validate", "additive-prepare", "additive-apply"):
         child = sub.add_parser(command)
         child.add_argument("--registry", required=True)
         child.add_argument("--state", required=True)
         child.add_argument("--years", type=int, default=100)
-        if command in {"prepare", "rebuild"}:
+        if command in {"prepare", "rebuild", "additive-prepare", "additive-apply"}:
             child.add_argument("--plan-dir", required=True)
-        if command == "rebuild":
+        if command in {"rebuild", "additive-apply"}:
             child.add_argument("--backup-dir", required=True)
+        if command == "additive-prepare":
+            child.add_argument("--person", action="append", required=True)
+            child.add_argument("--max-images", type=int, required=True)
+        if command == "rebuild":
             child.add_argument("--confirm-reset", action="store_true")
         if command == "sync":
             mode = child.add_mutually_exclusive_group()
@@ -44,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not 1 <= args.years <= 100:
         parser.error("years must be 1-100")
+    if args.command == "additive-prepare" and not 1 <= args.max_images <= 30:
+        parser.error("max-images must be 1-30")
     if args.command == "sync":
         if args.loop_seconds < 0 or (args.apply_plan and args.loop_seconds):
             parser.error("apply-plan runs once; loop-seconds cannot be negative")
@@ -67,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args) -> int:
+    from .additive_plan import apply_additive_plan, prepare_additive
     from .face_pipeline import FacePipeline
     from .frozen_plan import apply_plan, load_plan, prepare_foundation, reconcile_expansion
     from .teacher import ImmichTeacher
@@ -82,6 +89,8 @@ def _run(args) -> int:
     _recover_pending_sync(state)
     if state.path.with_name(state.path.name + ".rebuild-in-progress.json").exists():
         raise RuntimeError("unfinished enrollment requires recovery before further work")
+    if state.path.with_name(state.path.name + ".additive-in-progress.json").exists():
+        raise RuntimeError("unfinished additive enrollment requires manual review")
     registry = PersonIdentityRegistry(args.registry, immich_origin=immich_settings.immich_url, frigate_origin=target.origin)
     pipeline, teacher = FacePipeline.from_env(), ImmichTeacher.from_env()
     if args.command == "validate":
@@ -114,6 +123,19 @@ def _run(args) -> int:
         if args.command == "prepare":
             plan = prepare_foundation(args.plan_dir, **context)
             print(json.dumps({"prepared_plan": plan["plan_id"], "people": 3, "images": 15}), flush=True)
+        elif args.command == "additive-prepare":
+            plan = prepare_additive(
+                args.plan_dir, target_names=args.person, max_images=args.max_images, **context
+            )
+            print(json.dumps({
+                "prepared_plan": plan["plan_id"],
+                "people": len(plan["people"]),
+                "images": sum(len(person["images"]) for person in plan["people"]),
+                "skipped": plan["skipped"],
+            }, ensure_ascii=False), flush=True)
+        elif args.command == "additive-apply":
+            result = apply_additive_plan(args.plan_dir, backup_dir=args.backup_dir, **context)
+            print(json.dumps(result, ensure_ascii=False), flush=True)
         elif args.command == "rebuild":
             if not args.confirm_reset:
                 raise SystemExit("--confirm-reset is required for the destructive rebuild")

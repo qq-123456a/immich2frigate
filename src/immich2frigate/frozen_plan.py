@@ -29,6 +29,9 @@ def prepare_foundation(root, *, state, registry, frigate, immich, vectors, pipel
     state_sha, registry_sha = file_hash(state.path), file_hash(registry.path)
     inventory = _inventory(frigate)
     people = {person.person_id: person for person in immich.people()}
+    preserved_inventory, external_people, preserved_hashes = _external_identities(
+        state, registry, people.values(), inventory, frigate
+    )
     pools, bindings = {}, {}
     for row in state.roster:
         person = people.get(row["person_id"])
@@ -42,8 +45,11 @@ def prepare_foundation(root, *, state, registry, frigate, immich, vectors, pipel
         print(json.dumps({"preparation": "quality_scan", "eligible_candidates": len(pools[person.person_id])}), flush=True)
     if len(pools) != 3:
         raise ValueError("foundation must retain exactly three existing identities")
-    if any(name not in {binding.frigate_name for binding in bindings.values()} for name in inventory):
-        raise RuntimeError("unexpected registered identities; only the locked roster can be rebuilt")
+    external_pools = {
+        person_id: scan_person(immich, vectors, person, pipeline, years=state.years)
+        for person_id, person in external_people.items()
+    }
+    reference_pools = {**pools, **external_pools}
     confirmed = {}
     def confirm(candidate):
         source = candidate.source.source
@@ -52,13 +58,14 @@ def prepare_foundation(root, *, state, registry, frigate, immich, vectors, pipel
             result = teacher.confirm(candidate.face.stored_webp, exclude_asset_id=source.asset_id, exclude_checksum=source.checksum)
             confirmed[key] = result.confirmed and result.person_id == source.person_id
         return confirmed[key]
-    selected = {person_id: select_foundation(people[person_id], pool, teacher=confirm, references_by_person=pools) for person_id, pool in pools.items()}
+    selected = {person_id: select_foundation(people[person_id], pool, teacher=confirm, references_by_person=reference_pools) for person_id, pool in pools.items()}
+    final_references = {**external_pools, **selected}
     for chosen in selected.values():
         for candidate in chosen:
-            margin = cross_person_margin(candidate, selected)
+            margin = cross_person_margin(candidate, final_references)
             if margin is None or margin < MIN_CROSS_PERSON_MARGIN:
                 raise ValueError("the final five-image prototypes failed the cross-person margin")
-    manifest = {"schema": 1, "kind": "rebuild", "created_at": time.time(), "target": asdict(target), "frigate_face_recognition": recognition_profile, "immich_origin": state.immich_origin, "years": state.years, "profile": pipeline.profile.metadata(), "teacher": teacher.profile(), "inventory": inventory, "state_sha256": state_sha, "registry_sha256": registry_sha, "people": []}
+    manifest = {"schema": 1, "kind": "rebuild", "created_at": time.time(), "target": asdict(target), "frigate_face_recognition": recognition_profile, "immich_origin": state.immich_origin, "years": state.years, "profile": pipeline.profile.metadata(), "teacher": teacher.profile(), "inventory": inventory, "preserved_inventory": preserved_inventory, "preserved_face_hashes": preserved_hashes, "state_sha256": state_sha, "registry_sha256": registry_sha, "people": []}
     files = {}
     for person_id, chosen in selected.items():
         rows = []
@@ -71,6 +78,7 @@ def prepare_foundation(root, *, state, registry, frigate, immich, vectors, pipel
     verify_sources(manifest, immich, vectors)
     if frigate.verify_target() != target or frigate.face_recognition_profile() != recognition_profile or _inventory(frigate) != inventory or file_hash(state.path) != state_sha or file_hash(registry.path) != registry_sha:
         raise RuntimeError("runtime changed during preparation; old library retained")
+    _verify_preserved_faces(frigate, preserved_hashes)
     return save_plan(Path(root), manifest, files)
 
 
@@ -166,8 +174,13 @@ def verify_context(plan, state, registry, frigate, pipeline, teacher) -> None:
             raise ValueError("expansion would exceed thirty registered images")
     if _inventory(frigate) != plan["inventory"]:
         raise RuntimeError("Frigate library changed after preparation")
-    if any(name not in {person["frigate_name"] for person in plan["people"]} for name in plan["inventory"]):
-        raise RuntimeError("unexpected registered identity outside the locked roster")
+    expected_preserved = {
+        name: list(files) for name, files in plan["inventory"].items()
+        if name not in {person["frigate_name"] for person in plan["people"]}
+    }
+    if plan.get("preserved_inventory", {}) != expected_preserved:
+        raise RuntimeError("frozen plan does not account for every supplemental Frigate label")
+    _verify_preserved_faces(frigate, plan.get("preserved_face_hashes", {}))
 
 
 def verify_sources(plan, immich, vectors) -> None:
@@ -186,6 +199,47 @@ def verify_sources(plan, immich, vectors) -> None:
 
 def _inventory(frigate) -> dict:
     return {name: list(files) for name, files in frigate.inventory().items()}
+
+
+def _external_identities(state, registry, people, inventory, frigate):
+    base_ids = {row["person_id"] for row in state.roster}
+    base_names = {
+        binding.frigate_name for person_id in base_ids
+        if (binding := registry.binding(person_id)) is not None
+    }
+    external_people = {}
+    preserved_inventory = {}
+    preserved_hashes = {}
+    for name, filenames in inventory.items():
+        if name in base_names:
+            continue
+        matches = [
+            person for person in people
+            if (binding := registry.binding(person.person_id)) is not None
+            and binding.frigate_name == name
+        ]
+        if len(matches) != 1 or matches[0].person_id in base_ids:
+            raise RuntimeError(
+                "supplemental Frigate labels must have one verified Immich identity binding"
+            )
+        person = matches[0]
+        if frigate_face_name(person.name).casefold() != name.casefold():
+            raise RuntimeError("a supplemental Frigate identity was renamed in Immich")
+        external_people[person.person_id] = person
+        preserved_inventory[name] = list(filenames)
+        preserved_hashes[name] = {
+            filename: hashlib.sha256(frigate.face_image_bytes(name, filename)).hexdigest()
+            for filename in filenames
+        }
+    return preserved_inventory, external_people, preserved_hashes
+
+
+def _verify_preserved_faces(frigate, hashes) -> None:
+    for name, files in hashes.items():
+        for filename, expected_hash in files.items():
+            body = frigate.face_image_bytes(name, filename)
+            if hashlib.sha256(body).hexdigest() != expected_hash:
+                raise RuntimeError("a supplemental Frigate face changed after preparation")
 
 
 def register_verified(frigate, name, item, root, pipeline, teacher) -> dict:
@@ -284,7 +338,11 @@ def apply_plan(root, plan, *, state, registry, frigate, pipeline, teacher, immic
     if plan["kind"] == "rebuild":
         def deletion(name, batch, phase):
             write_json(journal, {"plan_id": plan["plan_id"], "plan_dir": str(root), "backup_dir": str(backup_dir), "phase": phase, "delete": {"name": name, "files": batch}, "completed": []})
-        reset_registered_library(frigate, expected_inventory=plan["inventory"], on_delete=deletion)
+        reset_registered_library(
+            frigate, expected_inventory=plan["inventory"],
+            names=[person["frigate_name"] for person in plan["people"]],
+            on_delete=deletion,
+        )
     completed = []
     next_roster = []
     enrolled_at = time.time()
@@ -310,9 +368,16 @@ def apply_plan(root, plan, *, state, registry, frigate, pipeline, teacher, immic
             updated["last_batch"] = {"plan_id": plan["plan_id"], "status": "pending", "added": [record for record in completed if record["face_id"] in {image["face_id"] for image in person["images"]}], "previous_enrolled_at": old["enrolled_at"], "previous_profile": old["profile"], "previous_plan_id": old["plan_id"]}
         next_roster.append(updated)
     inventory = _inventory(frigate)
-    expected_names = {person["frigate_name"] for person in plan["people"]}
-    if any(inventory.get(person["frigate_name"], []) != sorted(image["filename"] for image in row["images"]) for person, row in zip(plan["people"], next_roster)) or any(files for name, files in inventory.items() if name not in expected_names):
+    expected_inventory = {
+        name: list(files) for name, files in plan.get("preserved_inventory", {}).items()
+    }
+    for person, row in zip(plan["people"], next_roster):
+        expected_inventory[person["frigate_name"]] = sorted(
+            image["filename"] for image in row["images"]
+        )
+    if inventory != dict(sorted(expected_inventory.items())):
         raise RuntimeError("final registered inventory does not match the new ledger")
+    _verify_preserved_faces(frigate, plan.get("preserved_face_hashes", {}))
     state.roster = next_roster
     state.pending = None
     state.save()
@@ -347,7 +412,24 @@ def reconcile_expansion(*, state, registry, frigate, pipeline, teacher, report) 
     if state.pending is not None or journal.exists():
         raise RuntimeError("unresolved writes prevent automatic batch withdrawal")
     before = _inventory(frigate)
-    expected, next_roster, deletions = {}, [], []
+    locked_names = {
+        binding.frigate_name
+        for row in state.roster
+        if (binding := registry.binding(row["person_id"])) is not None
+    }
+    if len(locked_names) != len(state.roster):
+        raise RuntimeError("identity binding changed before withdrawal")
+    preserved_inventory = {
+        name: files for name, files in before.items() if name not in locked_names
+    }
+    preserved_hashes = {
+        name: {
+            filename: hashlib.sha256(frigate.face_image_bytes(name, filename)).hexdigest()
+            for filename in files
+        }
+        for name, files in preserved_inventory.items()
+    }
+    expected, next_roster, deletions = dict(preserved_inventory), [], []
     restored_at = time.time()
     for row in state.roster:
         binding = registry.binding(row["person_id"])
@@ -375,8 +457,6 @@ def reconcile_expansion(*, state, registry, frigate, pipeline, teacher, report) 
         next_roster.append(updated)
         if additions:
             deletions.append((name, [item["filename"] for item in additions]))
-    if set(before) != set(expected):
-        raise RuntimeError("unexpected identities prevent automatic withdrawal")
     state.preflight()
     completed = []
     for name, files in deletions:
@@ -387,6 +467,7 @@ def reconcile_expansion(*, state, registry, frigate, pipeline, teacher, report) 
         completed.append({"name": name, "files": files})
     if _inventory(frigate) != dict(sorted(expected.items())):
         raise RuntimeError("withdrawn library differs from the expected baseline")
+    _verify_preserved_faces(frigate, preserved_hashes)
     state.roster = next_roster
     state.save()
     write_json(state.path.parent / "withdrawals" / f"{batch_id}.json", {"plan_id": batch_id, "reason": "new_event_conflict", "removed": completed, "report": report})

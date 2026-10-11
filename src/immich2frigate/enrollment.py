@@ -317,9 +317,10 @@ def reset_registered_library(
     frigate,
     *,
     expected_inventory: Mapping[str, Sequence[str]] | None = None,
+    names: Sequence[str] | None = None,
     on_delete=None,
 ) -> int:
-    """Delete all registered face images from a freshly read inventory."""
+    """Delete selected registered face images from a freshly read inventory."""
 
     inventory = frigate.inventory()
     if expected_inventory is not None:
@@ -329,8 +330,12 @@ def reset_registered_library(
         }
         if inventory != expected:
             raise RuntimeError("Frigate face inventory changed after backup; refusing reset")
+    selected = set(inventory) if names is None else set(names)
+    if not selected <= set(inventory):
+        raise ValueError("reset names must exist in the expected Frigate inventory")
     deleted = 0
-    for name, filenames in inventory.items():
+    for name in sorted(selected):
+        filenames = inventory[name]
         for offset in range(0, len(filenames), 512):
             batch = list(filenames[offset : offset + 512])
             if on_delete is not None:
@@ -342,9 +347,13 @@ def reset_registered_library(
             if on_delete is not None:
                 on_delete(name, batch, "deleted")
     remaining = frigate.inventory()
-    nonempty = {name: files for name, files in remaining.items() if files}
-    if nonempty:
-        raise RuntimeError("Frigate face reset did not produce an empty registered library")
+    nonempty = {name: tuple(files) for name, files in remaining.items() if files}
+    expected_nonempty = {
+        name: tuple(files) for name, files in inventory.items()
+        if name not in selected and files
+    }
+    if nonempty != expected_nonempty:
+        raise RuntimeError("Frigate face reset changed unselected labels or left selected images")
     return deleted
 
 

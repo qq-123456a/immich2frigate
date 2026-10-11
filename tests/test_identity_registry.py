@@ -101,3 +101,12 @@ def test_auto_bind_action_preserves_the_actual_frigate_label(tmp_path):
     assert actions[0]["status"] == "AUTO_BIND_REQUIRED"
     assert actions[0]["name"] == "Alex_Smith"
     assert actions[0]["frigate_name"] == "alex_smith"
+
+
+def test_reconcile_converts_parenthetical_name_to_safe_frigate_label(tmp_path):
+    store = registry(tmp_path / "identities.json")
+
+    actions = store.reconcile([Person(PERSON, "Example Person (Alias)")], {})
+
+    assert actions[0]["name"] == "Example_Person_Alias"
+    assert actions[0]["status"] == "UNBOUND_PERSON"

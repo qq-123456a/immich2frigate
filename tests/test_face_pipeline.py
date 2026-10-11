@@ -167,3 +167,28 @@ def test_foundation_retries_after_teacher_rejection():
     assert len(result) == 5
     assert calls == 6
     assert rejected_ids.isdisjoint(item.source.source.face_id for item in result)
+
+
+def test_select_foundation_allows_small_target_counts(monkeypatch):
+    import immich2frigate.face_pipeline as face_pipeline
+
+    candidates = [
+        type("Candidate", (), {
+            "identity_safe": True,
+            "source": type("Source", (), {"source": type("Face", (), {"face_id": str(i)})()})(),
+            "face": type("Face", (), {"eligible": True})(),
+        })()
+        for i in range(2)
+    ]
+
+    def ranked(_person, foundation, _expansion, _prepared, *, min_foundation):
+        assert min_foundation == 2
+        return [type("Ranked", (), {"candidate": item})() for item in foundation]
+
+    monkeypatch.setattr(face_pipeline, "select_prepared_candidates", ranked)
+
+    assert face_pipeline.select_foundation(
+        PersonRecord("00000000-0000-4000-8000-000000000001", "Example Person"),
+        candidates,
+        count=2,
+    ) == candidates

@@ -7,6 +7,10 @@
 - Require five strict, Teacher-confirmed candidates per person before producing a frozen rebuild plan. Strict profile: pinned Frigate 0.18 large/ArcFace, YuNet and LBF readback; target-face IoU ≥0.5; stored side ≥80 px; sharpness ≥250; color/exposure gates; eDifFIQA ≥0.30; absolute yaw/pitch/roll ≤15°; cross-person raw-cosine margin ≥0.10; same-source/checksum and cosine ≥0.98 duplicates rejected.
 - Freeze upload bytes, stored-WebP bytes, embeddings, metrics, roster, service target, source hashes, model profile, and inventory. A changed source or runtime invalidates the plan.
 
+## Explicitly targeted photo comparison
+
+For a separate comparison, `additive-prepare` accepts only explicitly named Immich people and a requested total per person; it applies the same strict profile, cross-person margin, duplicate filtering, and Immich Teacher confirmation, then freezes an append-only plan. People already at or above the requested total are skipped. Apply backs up the current face library, identity registry, state, and Frigate config, and verifies every stored crop. Additions to a locked-roster person extend its source ledger; other bound people stay outside the locked validation roster. Foundation rebuilds preserve supplemental labels, and candidate checks include their Immich identity references. Example: `--person "Example Person" --max-images 20` selects only that person for a 20-image total.
+
 ## Deployment and rollback
 
 1. From the immich2frigate repository root, build with `docker compose -f compose.runtime.yaml build`, then stop the scheduled sync with `docker compose -f compose.runtime.yaml stop immich2frigate-sync`. Building does not touch production data. Keep model assets read-only; mount the root of Frigate `model_cache` at `/models/frigate` with its `facedet/` child intact, and verify pinned hashes through profile startup.
