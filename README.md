@@ -16,6 +16,29 @@ The quality models are external, read-only assets. Mount the root of Frigate's `
 
 An expansion proposes at most two Immich source images per person per batch, with a 30-image library cap. Candidate sources must pass the same strict face profile, deduplication, cross-person margin, and independent Teacher check. The complete three-person Frigate prototype update is simulated against calibration events; the batch is frozen only if coverage strictly improves and conflicts do not increase. Empty proposals are safe no-ops. After apply, added images remain pending until all three people pass a fresh holdout gate of at least 20 confirmed events, zero conflicts, and at least 0.90 agreement. A new conflict withdraws that batch's added Frigate files, restores the prior source ledger and profile, and starts a new validation epoch at the withdrawal time; collect fresh events before proposing or accepting another batch.
 
+## Targeted additive enrollment
+
+Use `additive-prepare` only for explicitly named Immich people. It uses the same strict face pipeline, cross-person margin, deduplication, and Immich Teacher checks, and tops each selected Frigate label up to the requested total. Labels already at or above the limit are left unchanged. The frozen plan includes the full named-person roster and Frigate inventory; apply backs up the library and registers only the planned images. For people in the locked three-person roster, apply also appends the verified source records to the private ledger. Other bound people remain supplemental labels outside the validation roster; foundation rebuilds preserve their images, and candidate checks include their Immich identity references.
+
+Finish validation for any pending expansion batch before preparing or applying targeted enrollment.
+
+For example, select one person and target 20 images; repeat `--person` to select more than one:
+
+```sh
+docker compose -f compose.runtime.yaml run --rm --no-deps immich2frigate-sync additive-prepare \
+  --registry /var/lib/immich2frigate/identity-registry.json \
+  --state /var/lib/immich2frigate/sync-state.json \
+  --plan-dir /var/lib/immich2frigate/plans/photo-comparison \
+  --person "Example Person" --max-images 20
+docker compose -f compose.runtime.yaml run --rm --no-deps immich2frigate-sync additive-apply \
+  --registry /var/lib/immich2frigate/identity-registry.json \
+  --state /var/lib/immich2frigate/sync-state.json \
+  --plan-dir /var/lib/immich2frigate/plans/photo-comparison \
+  --backup-dir /backups/photo-comparison-unique-id
+```
+
+Review the frozen plan before applying. The selected people get only Immich photos; other labels and the existing validation roster remain unchanged.
+
 ## Deployment sequence
 
 From the immich2frigate repository root, build the image first; this does not touch production services or data. Then stop the existing scheduled sync before operating on the library. Keep the face models mounted read-only and provide secrets/state only through runtime environment and persistent private directories.

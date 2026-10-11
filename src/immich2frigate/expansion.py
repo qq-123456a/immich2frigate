@@ -16,6 +16,7 @@ from .face_pipeline import (
     PreparedCandidate,
     _unit,
     cross_person_margin,
+    scan_person,
 )
 from .frigate018 import build_class_mean, reported_confidence
 from .frigate_names import frigate_face_name
@@ -45,7 +46,7 @@ def prepare_expansion(
     teacher,
 ) -> dict:
     """Freeze at most two new, source-confirmed images per existing identity."""
-    from .frozen_plan import file_hash, save_plan, verify_sources
+    from .frozen_plan import _external_identities, file_hash, save_plan, verify_sources, _verify_preserved_faces
 
     validation_context = check_validation_context(validation_report, state, frigate, pipeline, teacher)
     if state.pending is not None or state.path.with_name(state.path.name + ".rebuild-in-progress.json").exists():
@@ -56,6 +57,9 @@ def prepare_expansion(
     state_sha, registry_sha = file_hash(state.path), file_hash(registry.path)
     inventory = _inventory(frigate)
     people = {person.person_id: person for person in immich.people()}
+    preserved_inventory, external_people, preserved_hashes = _external_identities(
+        state, registry, people.values(), inventory, frigate
+    )
     pools: dict[str, list[PreparedCandidate]] = {}
     known: dict[str, list[PreparedCandidate]] = {}
     bindings = {}
@@ -76,6 +80,10 @@ def prepare_expansion(
         pools[person_id] = _scan_new_candidates(row, person, immich, vectors, pipeline, state.years)
 
     references = {person_id: [*known[person_id], *pools[person_id]] for person_id in rows_by_person}
+    references.update({
+        person_id: scan_person(immich, vectors, person, pipeline, years=state.years)
+        for person_id, person in external_people.items()
+    })
     proposed: dict[str, list[PreparedCandidate]] = {}
     globally_selected: list[PreparedCandidate] = []
     for person_id, row in rows_by_person.items():
@@ -149,6 +157,8 @@ def prepare_expansion(
         "profile": pipeline.profile.metadata(),
         "teacher": teacher.profile(),
         "inventory": inventory,
+        "preserved_inventory": preserved_inventory,
+        "preserved_face_hashes": preserved_hashes,
         "state_sha256": state_sha,
         "registry_sha256": registry_sha,
         "validation_epoch": validation_context["epoch"],
@@ -197,6 +207,7 @@ def prepare_expansion(
         or file_hash(registry.path) != registry_sha
     ):
         raise RuntimeError("runtime changed during preparation; no expansion was frozen")
+    _verify_preserved_faces(frigate, preserved_hashes)
     latest_report = _latest_validation_report(validation_report, state)
     latest_context = check_validation_context(latest_report, state, frigate, pipeline, teacher)
     latest_events = _calibration_report_events(latest_report)

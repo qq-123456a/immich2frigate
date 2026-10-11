@@ -198,6 +198,21 @@ def test_reset_deletes_explicit_inventory_and_verifies_empty():
     assert frigate.inventory() == {}
 
 
+def test_reset_can_preserve_unselected_registered_labels():
+    frigate = FakeFrigate()
+    frigate.state["Supplemental"] = ("d.webp",)
+
+    assert reset_registered_library(
+        frigate, expected_inventory=frigate.inventory(), names=["Amy", "Bob"]
+    ) == 3
+
+    assert frigate.inventory() == {"Supplemental": ("d.webp",)}
+    assert frigate.deleted == [
+        ("Amy", ("a.webp", "b.webp")),
+        ("Bob", ("c.webp",)),
+    ]
+
+
 def test_reset_fails_if_remote_inventory_remains():
     frigate = FakeFrigate()
 

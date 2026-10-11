@@ -291,10 +291,13 @@ def select_foundation(
     person: PersonRecord,
     candidates: Sequence[PreparedCandidate],
     *,
+    count: int = 5,
     teacher: Callable[[PreparedCandidate], bool] | None = None,
     references_by_person: Mapping[str, Sequence[PreparedCandidate]] | None = None,
 ) -> list[PreparedCandidate]:
-    """Rank the strict pool and refill rejected teacher candidates until five remain."""
+    """Rank a strict pool and refill rejected Teacher candidates to the requested count."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("selection count must be a positive integer")
     pool = [candidate for candidate in candidates if candidate.identity_safe and candidate.face.eligible]
     if references_by_person is not None:
         pool = [
@@ -302,18 +305,19 @@ def select_foundation(
             if (margin := cross_person_margin(candidate, references_by_person)) is not None
             and margin >= MIN_CROSS_PERSON_MARGIN
         ]
-    while len(pool) >= 5:
+    while len(pool) >= count:
         by_face_id = {item.source.source.face_id: item.face for item in pool}
         selected = select_prepared_candidates(
             person,
             [item.source for item in pool],
             [item.source for item in pool],
             by_face_id,
+            min_foundation=count,
         )
-        chosen = [next(item for item in pool if item.source.source.face_id == row.candidate.source.face_id) for row in selected[:5]]
+        chosen = [next(item for item in pool if item.source.source.face_id == row.candidate.source.face_id) for row in selected[:count]]
         rejected = next((item for item in chosen if teacher is not None and not teacher(item)), None)
         if rejected is None:
-            if references_by_person is not None:
+            if references_by_person is not None and count == 5:
                 margin = _prototype_margin(chosen, references_by_person)
                 if margin is None or margin < MIN_CROSS_PERSON_MARGIN:
                     weakest = min(
@@ -324,7 +328,7 @@ def select_foundation(
                     continue
             return chosen
         pool.remove(rejected)
-    raise ValueError(f"fewer than five strict, identity-safe candidates remain for {person.name!r}")
+    raise ValueError(f"fewer than {count} strict, identity-safe candidates remain for {person.name!r}")
 
 
 def select_prepared_candidates(
@@ -332,6 +336,8 @@ def select_prepared_candidates(
     foundation_candidates: list[VectorFace],
     expansion_candidates: list[VectorFace],
     prepared_by_face_id: Mapping[str, PreparedFace],
+    *,
+    min_foundation: int = 5,
 ) -> list[RankedFace]:
     """Apply Immich identity safety to the full pool, then rank on Frigate vectors."""
     def eligible(items: list[VectorFace]) -> list[VectorFace]:
@@ -367,8 +373,8 @@ def select_prepared_candidates(
     expansion = eligible(expansion_candidates)
     foundation_ids = {item.source.face_id for item in eligible(foundation_candidates)}
     foundation = [item for item in expansion if item.source.face_id in foundation_ids]
-    if len(foundation) < 5:
-        raise ValueError("at least five strict foundation candidates are required")
+    if len(foundation) < min_foundation:
+        raise ValueError(f"at least {min_foundation} strict foundation candidates are required")
     _validated_matrix(person, expansion, attr="face_embedding")
     safe_expansion = expansion
     embeddings = np.stack([_unit(prepared_by_face_id[item.source.face_id or ""].embedding) for item in safe_expansion])

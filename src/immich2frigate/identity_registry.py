@@ -113,7 +113,7 @@ class PersonIdentityRegistry:
             if person_id in seen_ids:
                 raise ValueError("people contains duplicate Immich person IDs")
             seen_ids.add(person_id)
-            new_name = _face_name(person.name)
+            new_name = validate_frigate_name(frigate_face_name(person.name))
             normalized_name = new_name.casefold()
             if normalized_name in seen_names:
                 raise ValueError("Immich people have colliding Frigate labels")

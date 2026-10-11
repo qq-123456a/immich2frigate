@@ -4,5 +4,5 @@ from __future__ import annotations
 
 
 def frigate_face_name(name: str) -> str:
-    """Match Frigate's face-folder rule: spaces in labels become underscores."""
-    return name.replace(" ", "_")
+    """Make an Immich name a valid Frigate face label."""
+    return "_".join("".join(char for char in name if char.isalnum() or char in "'_- ").split())

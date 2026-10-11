@@ -630,8 +630,14 @@ def test_changed_frozen_expansion_event_is_rejected_before_writes(tmp_path, monk
     assert case["frigate"].delete_calls == case["frigate"].register_calls == []
 
 
-def test_fresh_conflict_withdraws_only_added_images_and_restores_classifier_metadata(tmp_path):
+def test_fresh_conflict_withdraws_added_images_and_preserves_supplemental_faces(tmp_path):
     case = _pending_expansion_case(tmp_path)
+    external_id = "00000000-0000-4000-8000-000000000099"
+    external_name = "Example_Person"
+    external_content = _webp("supplemental")
+    case["registry"].bind(external_id, external_name)
+    case["frigate"].state[external_name] = ["supplemental.webp"]
+    case["frigate"].blobs[(external_name, "supplemental.webp")] = external_content
     before = case["frigate"].inventory()
     report = _validation_report(case, {
         "fresh-conflict": {
@@ -651,6 +657,7 @@ def test_fresh_conflict_withdraws_only_added_images_and_restores_classifier_meta
         name: tuple(filename for filename in files if not filename.startswith("added-"))
         for name, files in before.items()
     }
+    assert case["frigate"].face_image_bytes(external_name, "supplemental.webp") == external_content
     assert len(case["frigate"].delete_calls) == 3
     assert all(len(files) == 1 and files[0].startswith("added-") for _, files in case["frigate"].delete_calls)
     for row in case["state"].roster:
